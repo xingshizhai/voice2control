@@ -1,0 +1,76 @@
+# 复制为 config.yaml 后按环境修改。字段与 docs/requirement.md 附录 E 对应。
+
+asr:
+  # 统一入口：选择当前启用的 provider 配置键
+  active_provider: "local_default"
+  timeout_sec: 60
+  # true=离线占位；真实识别设为 false，并保证 base_url 可达
+  mock: false
+  providers:
+    local_default:
+      provider: "local"
+      # 局域网 ASR：单次 Binary = 完整 WAV，响应 JSON；见 docs/asr-service-api.md
+      # 文档推荐程序走 ws://主机:6006；Web 场景可用 wss://主机:6443
+      base_url: "ws://192.168.1.88:6006"
+      ws_path: "/"
+      # 仅在使用 wss:// 且服务为自签名证书时需要 true；ws:// 下不生效
+      insecure_ssl: true
+      # 启用 ITN（逆文本归一化）：通常可改善标点与格式化结果
+      use_itn: true
+
+    dashscope_cn:
+      provider: "dashscope"
+      dashscope_model: "fun-asr-realtime"
+      # 可直接填写 key（不建议提交到仓库），留空则走环境变量
+      dashscope_api_key: ""
+      dashscope_api_key_env: "DASHSCOPE_API_KEY"
+      # 例如国际站: wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference
+      # 中国内地: wss://dashscope.aliyuncs.com/api-ws/v1/inference
+      dashscope_base_websocket_api_url: "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
+      dashscope_semantic_punctuation_enabled: true
+      use_itn: true
+
+audio:
+  sample_rate: 16000
+  channels: 1
+  max_seconds: 60
+
+hotkey:
+  push_to_talk: "f8"
+  rerecord: "ctrl+shift+r"
+  quit: "ctrl+q"
+  # 程序启动后默认是否允许识别
+  recognition_enabled_on_start: true
+
+gui:
+  # 点击窗口关闭按钮时，是否最小化到系统托盘而不是直接退出
+  minimize_to_tray_on_close: true
+
+delivery:
+  mode: paste_and_send
+  restore_clipboard: true
+  # 是否默认执行发送回车（对 Cursor/聊天工具常用）
+  auto_send_enter: true
+  # 动作间隔（毫秒）：跨窗口投递不稳定时可增大到 80~150
+  key_tap_interval_ms: 60
+  # 恢复剪贴板延迟（毫秒）：避免 Ctrl+V 尚未完成就恢复了旧剪贴板
+  restore_clipboard_delay_ms: 220
+  # 窗口白名单（可选）：仅当前台窗口标题包含任一关键字时才投递
+  # 例如：["Cursor", "Claude"]
+  window_whitelist: []
+  # 预设：cursor_win（仅 paste→send，需先手动聚焦聊天框）
+  profile: cursor_win
+  profiles:
+    cursor_win:
+      actions:
+        - action: paste
+          keys: ["ctrl", "v"]
+        - action: send
+          keys: ["enter"]
+    paste_only_generic:
+      actions:
+        - action: paste
+          keys: ["ctrl", "v"]
+
+history:
+  max_items: 50
