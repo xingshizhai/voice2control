@@ -83,16 +83,17 @@ sequenceDiagram
 
 | 模块（建议路径） | 职责 |
 |------------------|------|
-| `voice_controller.main` | CLI、配置路径、`--validate-only` |
-| `voice_controller.config` | 加载 YAML、校验必填项、合并 profile、导出结构化 `AppConfig` |
-| `voice_controller.audio` | PyAudio 打开流、采样率与块大小、可选 WebRTC VAD、静音超时结束 |
-| `voice_controller.asr` | WebSocket 连接局域网 ASR、发送 **WAV 二进制**、解析 JSON 结果、超时（首版可最小实现） |
-| `voice_controller.delivery` | 按 `delivery.mode` 与 `actions` 执行；剪贴板备份/恢复；调用键盘抽象 |
-| `voice_controller.backends` | `ClipboardBackend`、`KeyboardBackend`、`HotkeyBackend` 协议与 Win 实现；预留 Darwin/Linux |
-| `voice_controller.pipeline` | 状态机、取消录音、与热键事件对接 |
-| `voice_controller.history` | 本地环形缓冲（最近 N 条）、供撤销/重发（持久化策略可后续定） |
+| `vc.app_module.entry` | CLI、配置路径、`--validate-only`、程序入口编排 |
+| `vc.config` | 加载 YAML、校验必填项、合并 profile、导出结构化 `AppConfig` |
+| `vc.input_module.audio` | PyAudio 打开流、采样率与块大小、可选 WebRTC VAD、静音超时结束 |
+| `vc.asr_module.client` | WebSocket 连接局域网 ASR、发送 **WAV 二进制**、解析 JSON 结果、超时 |
+| `vc.output_module.delivery` | 按 `delivery.mode` 与 `actions` 执行；剪贴板备份/恢复；调用键盘抽象 |
+| `vc.backends` | `ClipboardBackend`、`KeyboardBackend`、`HotkeyBackend` 协议与 Win 实现；预留 Darwin/Linux |
+| `vc.core_module.pipeline` | 状态机、取消录音、与热键事件对接 |
+| `vc.core_module.history` | 本地环形缓冲（最近 N 条）、供撤销/重发（持久化策略可后续定） |
+| `vc.lexicon_module.service` | 本地术语词库（SQLite）与识别后纠正逻辑 |
 
-**依赖方向**：`pipeline` → `audio` / `asr` / `delivery`；`delivery` → `backends`；禁止反向依赖业务层。
+**依赖方向**：`core_module.pipeline` → `input_module` / `asr_module` / `output_module` / `lexicon_module`；`output_module` → `backends`；禁止反向依赖业务层。
 
 ---
 
@@ -256,7 +257,7 @@ CI 默认不依赖真麦克风与真实 ASR 服务；`integration` marker 用于
 
 | 方式 | 说明 |
 |------|------|
-| **源码** | `requirements.txt` + `python -m voice_controller.main` |
+| **源码** | `requirements.txt` + `python -m vc` |
 | **Windows 可执行文件** | PyInstaller / cx_Freeze（后续）；注意 `keyboard`、PyAudio 二进制依赖打包 |
 | **配置** | 与可执行文件同目录或 `%APPDATA%` 下固定路径（实现时定） |
 

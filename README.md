@@ -1,108 +1,250 @@
 # AI Voice Controller
 
-按住说话，松开后自动识别并投递到当前焦点输入框（如 Cursor 聊天窗口）。
+AI Voice Controller is a push-to-talk speech-to-text desktop tool for Windows.  
+Hold a hotkey to record, release to transcribe, then automatically paste or send text to the current focused app (for example, Cursor chat).
 
-## 3 分钟上手
+English | [简体中文](README.zh-CN.md)
 
-1) 安装依赖
+## Overview
+
+This project helps developers and power users replace repetitive typing with voice input while keeping control over:
+
+- **When recording starts/stops** (global hotkey)
+- **Which ASR backend is used** (`local` WebSocket or `dashscope`)
+- **How text is delivered** (`paste_and_send`, `paste_only`, `review`)
+- **How domain terms are corrected** (local SQLite lexicon)
+
+## Features
+
+- Global push-to-talk recording with cancel/quit controls
+- GUI and CLI modes
+- Multi-provider ASR configuration
+- Safe text delivery with optional window whitelist
+- Clipboard restore and auto-send toggle
+- Local terminology lexicon correction
+- Lexicon management in GUI and CLI
+- CSV import/export for lexicon backup and migration
+
+## Typical Use Cases
+
+- Voice input in Cursor, IDE chat, notes, and internal tools
+- Faster writing for repeated domain terms (product names, APIs, acronyms)
+- Hybrid setup: local ASR for privacy + cloud ASR fallback when needed
+
+## Quick Start (3 Minutes)
+
+### 1) Install dependencies
 
 ```powershell
 python -m pip install -r requirements.txt
 ```
 
-2) 准备配置
+### 2) Create config
 
 ```powershell
 copy config.example.yaml config.yaml
 ```
 
-3) 若使用 DashScope，设置 API Key（推荐环境变量）
+### 3) (Optional) Set DashScope API key via environment variable
 
 ```powershell
 $env:DASHSCOPE_API_KEY="sk-xxxx"
 ```
 
-4) 默认启动图形界面（PySide6）
+### 4) Launch GUI (default)
 
 ```powershell
-python -m voice_controller
+python -m vc
 ```
 
-5) 命令行模式（需要时）
+### 5) Validate config in CLI mode
 
 ```powershell
-python -m voice_controller --cli -c config.yaml --validate-only
-python -m voice_controller --cli -c config.yaml -v
+python -m vc --cli -c config.yaml --validate-only
 ```
 
-## 功能
+## How It Works
 
-- 支持多 ASR provider：`local`（局域网 WebSocket）/ `dashscope`（阿里云百炼）
-- 支持多 provider 配置并通过 `active_provider` 切换
-- 支持自动输入与可选自动回车发送
-- 支持窗口白名单（可选）
+1. Hotkey pressed -> starts recording
+2. Hotkey released -> sends audio to configured ASR
+3. Transcript returned -> optional lexicon correction
+4. Corrected text -> delivered to focused app
+5. History and status updated in GUI/CLI
 
-## 环境要求
+## Configuration Highlights
+
+Start from `config.example.yaml`. Most users only need:
+
+- `asr.active_provider`
+- `asr.providers.*`
+- `delivery.mode`
+- `delivery.auto_send_enter`
+- `gui.minimize_to_tray_on_close`
+- `gui.auto_start_listening`
+- `lexicon.enabled`
+- `lexicon.db_path`
+- `lexicon.domain`
+
+## GUI Capabilities
+
+- Start/stop listening
+- Toggle recognition on/off at runtime
+- Configure provider/mode/whitelist
+- Lexicon add/update/delete
+- Lexicon search and sorting
+- CSV import/export and template generation
+
+## CLI Reference
+
+### Runtime
+
+```powershell
+python -m vc
+python -m vc --cli -c config.yaml -v
+python -m vc --cli -c config.yaml --validate-only
+```
+
+### Lexicon Management
+
+```powershell
+# Add/update term
+python -m vc --lexicon-add "LangChain" --lexicon-aliases "lang chain,郎圈"
+
+# List terms in current domain
+python -m vc --lexicon-list
+
+# Import from CSV (term,aliases,domain,weight)
+python -m vc --lexicon-import-csv ".\terms.csv"
+
+# Export current domain to CSV
+python -m vc --lexicon-export-csv ".\lexicon_export.csv"
+```
+
+## Lexicon CSV Format
+
+CSV headers:
+
+```text
+term,aliases,domain,weight
+```
+
+Example row:
+
+```text
+LangChain,"lang chain,郎圈",default,100
+```
+
+Import command reports:
+
+- `total`: total rows read
+- `imported`: successfully imported rows
+- `skipped`: invalid rows (for example empty term or non-integer weight)
+- `failed`: unexpected row-level failures
+
+## Default Hotkeys
+
+- `F8`: push-to-talk
+- `Esc`: cancel current recording
+- `Ctrl+Shift+R`: rerecord (reserved)
+- `Ctrl+Q`: quit
+
+## Platform & Requirements
 
 - Python 3.8+
-- Windows 10+（当前主验证平台）
+- Windows 10+ (primary validated platform)
 
-## 配置
+## Documentation
 
-复制配置模板：
+- `config.example.yaml`
+- `docs/asr-service-api.md`
+- `docs/technical-design.md`
+- `docs/requirement.md`
 
-```powershell
-copy config.example.yaml config.yaml
+## Project Structure
+
+```text
+vc/
+  app_module/        # app entry orchestration
+  __main__.py        # package entry
+  ui_module/         # GUI domain module
+  core_module/       # core runtime (pipeline/history)
+  input_module/      # hotkey/audio capture
+  output_module/     # delivery logic
+  platform_module/   # platform-specific utilities
+  asr_module/        # ASR domain module
+  lexicon_module/    # lexicon domain module
+  config.py          # typed config loading and validation
+tests/
+  test_*.py          # unit tests
 ```
 
-关键项（推荐只改这些）：
-
-- `asr.active_provider`：当前启用的 provider 键
-- `asr.providers.*`：各 provider 的具体配置
-- `delivery.auto_send_enter`：是否自动回车发送（Cursor 常用）
-- `gui.minimize_to_tray_on_close`：点击窗口关闭按钮时是否最小化到托盘
-- `delivery.mode`：
-  - `paste_and_send` 自动粘贴并发送
-  - `paste_only` 仅粘贴不发送
-
-### DashScope Key（推荐方式）
-
-建议用环境变量，不要明文写入 `config.yaml`：
+## Development
 
 ```powershell
-$env:DASHSCOPE_API_KEY="sk-xxxx"
+python -m pip install -r requirements-dev.txt
+python -m pytest -q
 ```
 
-## 文档索引
+## Build & Packaging (Windows)
 
-- `config.example.yaml`：完整示例配置
-- `docs/asr-service-api.md`：本地 ASR 服务协议说明
-- `docs/technical-design.md`：实现设计说明
+Install build dependencies first:
 
-## 默认热键
+```powershell
+python -m pip install -r requirements-dev.txt
+```
 
-- `F8`：按住录音，松开识别
-- `Ctrl+Shift+R`：重录（预留）
-- `Esc`：取消本轮录音
-- `Ctrl+Q`：退出
+PowerShell build script:
 
-> 可通过 `hotkey.recognition_enabled_on_start` 配置程序启动后默认是否允许识别。  
-> 若默认关闭，可在图形界面点击“启用识别”后再使用 F8 录音。
+```powershell
+# Build GUI + CLI (onedir)
+powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1
 
-## 常见问题
+# Build GUI only
+powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1 -Target gui
 
-- **只粘贴不发送？**  
-  检查 `delivery.mode` 是否为 `paste_only`。
+# Build CLI only (single executable)
+powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1 -Target cli -OneFile
+```
 
-- **设置了自动发送但不回车？**  
-  确认：
-  - `delivery.mode: paste_and_send`
-  - `delivery.profile: cursor_win`
-  - `delivery.auto_send_enter: true`
+Batch build script:
 
-- **ASR 报连接拒绝（10061）？**  
-  检查 provider 地址、端口与服务状态（网络/防火墙）。
+```powershell
+scripts\build.bat all
+scripts\build.bat gui --onefile
+```
 
-- **DashScope 提示未读取到 API Key？**  
-  `dashscope_api_key_env` 里应填“环境变量名”（如 `DASHSCOPE_API_KEY`），不是 key 值本身。
+Output directory:
+
+- `dist/voice2control` (GUI package)
+- `dist/voice2control-cli` (CLI package)
+
+## Known Limitations
+
+- Primary validation target is Windows
+- `Ctrl+Shift+R` is reserved and may be expanded in future versions
+- GUI automation behavior depends on target app focus and keyboard handling
+
+## FAQ
+
+- **ASR connection refused (10061)?**  
+  Check ASR service status, host, port, and firewall rules.
+
+- **DashScope key not found?**  
+  Ensure `dashscope_api_key_env` points to an environment variable name such as `DASHSCOPE_API_KEY`.
+
+- **Only paste, no send?**  
+  Verify `delivery.mode` and `delivery.auto_send_enter`.
+
+## SEO Keywords
+
+speech to text, push to talk, voice input, desktop dictation, ASR, hotkey recorder, Cursor voice input, local lexicon, SQLite terminology dictionary, Windows voice typing
+
+## Contributing
+
+Issues and pull requests are welcome.  
+Please include reproduction steps or test evidence when reporting bugs.
+
+## License
+
+MIT License. See `LICENSE`.
 

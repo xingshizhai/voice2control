@@ -5,7 +5,12 @@ from io import BytesIO
 
 import pytest
 
-from voice_controller.asr import ASRError, DashScopeASRClient, parse_asr_response, pcm_s16le_to_wav
+from vc.asr_module.client import (
+    ASRError,
+    DashScopeASRClient,
+    parse_asr_response,
+    pcm_s16le_to_wav,
+)
 
 
 def test_pcm_s16le_to_wav_header() -> None:

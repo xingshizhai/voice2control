@@ -5,12 +5,12 @@ import json
 import logging
 import ssl
 import tempfile
-from pathlib import Path
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import wave
+from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from voice_controller.config import AsrConfig
+from vc.config import AsrConfig
 
 logger = logging.getLogger(__name__)
 
@@ -58,13 +58,10 @@ def _build_ws_url(cfg: AsrConfig) -> str:
 
 
 def _connection_error_hint(exc: Exception) -> str:
-    """为常见网络错误补充排查提示（不改变原始异常）。"""
     msg = str(exc).lower()
     hints: list[str] = []
     if "10061" in str(exc) or "actively refused" in msg or "积极拒绝" in str(exc):
-        hints.append(
-            "目标地址拒绝连接：该 IP/端口上没有服务在监听，或 ASR 未启动。"
-        )
+        hints.append("目标地址拒绝连接：该 IP/端口上没有服务在监听，或 ASR 未启动。")
     if "10060" in str(exc) or "timed out" in msg or "超时" in str(exc):
         hints.append("连接超时：检查网络、防火墙或增大 timeout_sec。")
     if "10051" in str(exc) or "unreachable" in msg:
@@ -75,7 +72,6 @@ def _connection_error_hint(exc: Exception) -> str:
 
 
 def parse_asr_response(raw: str) -> str:
-    """解析 ASR 服务返回的 JSON：成功返回 text（可为空）；status=error 抛 ASRError。"""
     raw = raw.strip()
     if not raw:
         raise ASRError("ASR 返回空响应")
@@ -102,25 +98,18 @@ def parse_asr_response(raw: str) -> str:
 
 
 class WebSocketASRClient:
-    """连接局域网内 ASR 服务的 WebSocket：单次 Binary 发送完整 WAV，接收 JSON（见 docs/asr-service-api.md）。"""
-
     def __init__(self, cfg: AsrConfig) -> None:
         self._cfg = cfg
 
     def transcribe(self, pcm: bytes, sample_rate: int, channels: int = 1) -> str:
         if not pcm:
             return ""
-
         try:
             from websocket import ABNF, create_connection
         except ImportError as e:
             raise ASRError("需要 websocket-client：pip install websocket-client") from e
 
-        wav_data = pcm_s16le_to_wav(
-            pcm,
-            sample_rate=sample_rate,
-            channels=channels,
-        )
+        wav_data = pcm_s16le_to_wav(pcm, sample_rate=sample_rate, channels=channels)
         url = _build_ws_url(self._cfg)
         logger.debug("ASR WebSocket 连接: %s，WAV 字节=%d", url, len(wav_data))
 
@@ -129,15 +118,9 @@ class WebSocketASRClient:
             sslopt = {"cert_reqs": ssl.CERT_NONE, "check_hostname": False}
 
         try:
-            ws = create_connection(
-                url,
-                timeout=self._cfg.timeout_sec,
-                sslopt=sslopt,
-            )
+            ws = create_connection(url, timeout=self._cfg.timeout_sec, sslopt=sslopt)
         except Exception as e:
-            raise ASRError(
-                f"无法连接 ASR 服务: {e} | {_connection_error_hint(e)}",
-            ) from e
+            raise ASRError(f"无法连接 ASR 服务: {e} | {_connection_error_hint(e)}") from e
 
         try:
             if hasattr(ws, "settimeout"):
@@ -152,22 +135,16 @@ class WebSocketASRClient:
             except Exception:
                 pass
 
-        if isinstance(raw, bytes):
-            text = raw.decode("utf-8", errors="replace")
-        else:
-            text = str(raw)
+        text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
         return parse_asr_response(text)
 
 
 class DashScopeASRClient:
-    """阿里云百炼 DashScope ASR（文件识别模式，适配当前按住说话流程）。"""
-
     def __init__(self, cfg: AsrConfig) -> None:
         self._cfg = cfg
 
     @staticmethod
     def _extract_text_from_sentence(sentence: Any) -> str:
-        """兼容 DashScope 不同版本 sentence 结构（dict / list[dict] / str）。"""
         if sentence is None:
             return ""
         if isinstance(sentence, str):
@@ -234,7 +211,6 @@ class DashScopeASRClient:
             except Exception:
                 pass
 
-        # SDK 返回对象形态可能随版本变化，做宽松提取
         try:
             if hasattr(result, "status_code") and getattr(result, "status_code") not in (200, None):
                 msg = getattr(result, "message", "dashscope status_code 非 200")

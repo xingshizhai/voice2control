@@ -4,10 +4,10 @@ import logging
 import time
 from typing import Callable
 
-from voice_controller.backends.clipboard import ClipboardBackend
-from voice_controller.backends.keyboard import KeyboardBackend
-from voice_controller.config import DeliveryConfig
-from voice_controller.window_focus import get_foreground_window_title
+from vc.backends.clipboard import ClipboardBackend
+from vc.backends.keyboard import KeyboardBackend
+from vc.config import DeliveryConfig
+from vc.platform_module.window_focus import get_foreground_window_title
 
 logger = logging.getLogger(__name__)
 

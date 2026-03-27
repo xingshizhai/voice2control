@@ -10,10 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 def install_graceful_shutdown(q: "Queue[tuple[str, ...]]") -> Callable[[], None]:
-    """让 Ctrl+C / 控制台关闭 能结束主循环：向队列放入 ('quit',)。
-
-    Windows 上 `keyboard` 全局钩子常干扰控制台默认 Ctrl+C，故用 SetConsoleCtrlHandler。
-    """
+    """让 Ctrl+C / 控制台关闭 能结束主循环：向队列放入 ('quit',)。"""
 
     def request_quit() -> None:
         try:
@@ -27,7 +24,6 @@ def install_graceful_shutdown(q: "Queue[tuple[str, ...]]") -> Callable[[], None]
     def _on_signal(signum: int, frame: Any) -> None:
         request_quit()
 
-    # 非 Windows：SIGINT / SIGTERM
     if sys.platform != "win32":
         old_sigint = signal.signal(signal.SIGINT, _on_signal)
         if hasattr(signal, "SIGTERM"):
@@ -51,7 +47,6 @@ def install_graceful_shutdown(q: "Queue[tuple[str, ...]]") -> Callable[[], None]
 
         return cleanup
 
-    # Windows：控制台 Ctrl+C / Break / 关闭
     win_handler: Any = None
     try:
         import ctypes
@@ -62,7 +57,6 @@ def install_graceful_shutdown(q: "Queue[tuple[str, ...]]") -> Callable[[], None]
 
         @PHANDLER_ROUTINE
         def ctrl_handler(ctrl_type: int) -> bool:
-            # 0 CTRL_C_EVENT, 1 CTRL_BREAK_EVENT, 2 CTRL_CLOSE_EVENT
             if ctrl_type in (0, 1, 2):
                 request_quit()
                 return True
@@ -77,7 +71,6 @@ def install_graceful_shutdown(q: "Queue[tuple[str, ...]]") -> Callable[[], None]
     except Exception:
         logger.warning("控制台退出处理注册失败，请使用热键退出", exc_info=True)
 
-    # SetConsoleCtrlHandler 失败时再尝试 SIGINT（避免与控制台处理重复注册）
     if win_handler is None:
         try:
             old_sigint = signal.signal(signal.SIGINT, _on_signal)

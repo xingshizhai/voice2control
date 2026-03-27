@@ -79,7 +79,7 @@ tags:
 
 - 将采集到的 **s16le PCM** 封装为 **WAV** 后，以 **单次二进制帧** 发送。  
 - 使用 **`ws://`** 时无需 TLS；使用 **`wss://`** 时若服务为自签名证书，客户端需配置「不校验证书」或导入 CA（仅建议在可信内网使用）。  
-- Python 实现见 `voice_controller/asr.py`（依赖 `websocket-client`）。
+- Python 实现见 `vc/asr.py`（依赖 `websocket-client`）。
 
 ---
 

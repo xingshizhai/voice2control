@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from voice_controller.config import DeliveryAction, DeliveryConfig
-from voice_controller.delivery import Deliverer
+from vc.config import DeliveryAction, DeliveryConfig
+from vc.output_module.delivery import Deliverer
 
 
 @dataclass
