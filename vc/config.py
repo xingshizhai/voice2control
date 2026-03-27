@@ -70,12 +70,27 @@ class AudioConfig:
 
 
 @dataclass(frozen=True)
+class GuiConfig:
+    minimize_to_tray_on_close: bool = True
+    auto_start_listening: bool = True
+
+
+@dataclass(frozen=True)
+class LexiconConfig:
+    enabled: bool = False
+    db_path: str = "data/lexicon.db"
+    domain: str = "default"
+
+
+@dataclass(frozen=True)
 class AppConfig:
     asr: AsrConfig
     hotkey: HotkeyConfig
     delivery: DeliveryConfig
     history: HistoryConfig
     audio: AudioConfig
+    gui: GuiConfig
+    lexicon: LexiconConfig
 
 
 def _req_str(d: dict[str, Any], key: str) -> str:
@@ -238,6 +253,21 @@ def load_app_config(path: Path | str) -> AppConfig:
         channels=int(aud_raw.get("channels", 1)),
         max_seconds=float(aud_raw.get("max_seconds", 60.0)),
     )
+    gui_raw = data.get("gui") or {}
+    if not isinstance(gui_raw, dict):
+        raise ValueError("gui 必须为对象")
+    gui = GuiConfig(
+        minimize_to_tray_on_close=bool(gui_raw.get("minimize_to_tray_on_close", True)),
+        auto_start_listening=bool(gui_raw.get("auto_start_listening", True)),
+    )
+    lex_raw = data.get("lexicon") or {}
+    if not isinstance(lex_raw, dict):
+        raise ValueError("lexicon 必须为对象")
+    lexicon = LexiconConfig(
+        enabled=bool(lex_raw.get("enabled", False)),
+        db_path=str(lex_raw.get("db_path") or "data/lexicon.db").strip() or "data/lexicon.db",
+        domain=str(lex_raw.get("domain") or "default").strip() or "default",
+    )
 
     return AppConfig(
         asr=asr,
@@ -245,6 +275,8 @@ def load_app_config(path: Path | str) -> AppConfig:
         delivery=delivery,
         history=history,
         audio=audio,
+        gui=gui,
+        lexicon=lexicon,
     )
 
 
@@ -272,5 +304,7 @@ def load_app_config_with_env(path: Path | str) -> AppConfig:
             delivery=cfg.delivery,
             history=cfg.history,
             audio=cfg.audio,
+            gui=cfg.gui,
+            lexicon=cfg.lexicon,
         )
     return cfg

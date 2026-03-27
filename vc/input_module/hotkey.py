@@ -4,7 +4,7 @@ import logging
 import queue
 from typing import Callable
 
-from voice_controller.config import HotkeyConfig
+from vc.config import HotkeyConfig
 
 logger = logging.getLogger(__name__)
 

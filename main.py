@@ -1,4 +1,4 @@
-from voice_controller.main import main
+from vc.app_module.entry import main
 
 
 if __name__ == "__main__":

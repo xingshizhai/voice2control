@@ -7,19 +7,19 @@ import threading
 import time
 from typing import Callable
 
-from voice_controller.asr import ASRError, build_asr_client
-from voice_controller.audio import AudioRecorder
-from voice_controller.backends.clipboard import PyperclipClipboard
-from voice_controller.backends.keyboard import KeyboardTap
-from voice_controller.config import AppConfig
-from voice_controller.delivery import Deliverer
-from voice_controller.history import TextHistory
-from voice_controller.hotkey import HotkeyEvent, register_hotkeys
-from voice_controller.shutdown_handlers import install_graceful_shutdown
+from vc.asr_module.client import ASRError, build_asr_client
+from vc.backends.clipboard import PyperclipClipboard
+from vc.backends.keyboard import KeyboardTap
+from vc.config import AppConfig
+from vc.core_module.history import TextHistory
+from vc.input_module.audio import AudioRecorder
+from vc.input_module.hotkey import HotkeyEvent, register_hotkeys
+from vc.lexicon_module.service import LexiconCorrector
+from vc.output_module.delivery import Deliverer
+from vc.platform_module.shutdown_handlers import install_graceful_shutdown
 
 logger = logging.getLogger(__name__)
 
-# 约 0.1s @ 16kHz mono int16
 _MIN_PCM_BYTES = 3200
 
 
@@ -49,6 +49,7 @@ class VoicePipeline:
         self._keyboard = KeyboardTap()
         self._deliverer = Deliverer(cfg.delivery, self._clipboard, self._keyboard)
         self._history = TextHistory(cfg.history.max_items)
+        self._lexicon = LexiconCorrector(cfg.lexicon)
         self._unhook: Callable[[], None] | None = None
 
     def _emit_state(self, state: str) -> None:
@@ -113,7 +114,6 @@ class VoicePipeline:
             self._emit_state("stopped")
 
     def _dispatch(self, evt: HotkeyEvent) -> bool:
-        """返回 True 继续循环，False 退出。"""
         kind = evt[0]
         if kind == "quit":
             logger.info("退出")
@@ -184,15 +184,14 @@ class VoicePipeline:
             self._emit_error("ASR 异常")
             return
         dt = time.perf_counter() - t0
-        logger.info(
-            "识别完成 (%.2fs)，长度=%d 字 | 内容：%s",
-            dt,
-            len(text.strip()),
-            text,
-        )
+        logger.info("识别完成 (%.2fs)，长度=%d 字", dt, len(text.strip()))
         if not text.strip():
             logger.warning("识别结果为空")
             return
+        corrected_text, replaced_count = self._lexicon.correct(text)
+        if replaced_count > 0:
+            logger.info("词库纠正命中 %d 处", replaced_count)
+            text = corrected_text
         self._emit_transcript(text)
         try:
             self._emit_state("delivering")

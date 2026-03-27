@@ -39,12 +39,22 @@ hotkey:
   push_to_talk: "f8"
   rerecord: "ctrl+shift+r"
   quit: "ctrl+q"
-  # 程序启动后默认是否允许识别
+  # 监听启动后，识别是否默认开启
   recognition_enabled_on_start: true
 
 gui:
   # 点击窗口关闭按钮时，是否最小化到系统托盘而不是直接退出
   minimize_to_tray_on_close: true
+  # 打开 GUI 后是否自动开始监听
+  auto_start_listening: true
+
+lexicon:
+  # 本地术语词库：在 ASR 后对文本做纠正替换
+  enabled: false
+  # SQLite 路径（首次启用会自动建库建表）
+  db_path: "data/lexicon.db"
+  # 词库领域（便于不同场景分组）
+  domain: "default"
 
 delivery:
   mode: paste_and_send

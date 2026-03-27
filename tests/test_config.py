@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from voice_controller.config import load_app_config
+from vc.config import load_app_config
 
 
 def test_load_example_config(tmp_path: Path) -> None:
@@ -15,6 +15,9 @@ def test_load_example_config(tmp_path: Path) -> None:
     assert cfg.asr.provider_key
     assert cfg.delivery.profile in cfg.delivery.profiles
     assert "cursor_win" in cfg.delivery.profiles
+    assert isinstance(cfg.gui.minimize_to_tray_on_close, bool)
+    assert isinstance(cfg.gui.auto_start_listening, bool)
+    assert isinstance(cfg.lexicon.enabled, bool)
 
 
 def test_profile_missing_raises(tmp_path: Path) -> None:
@@ -94,3 +97,31 @@ audio: {}
     )
     with pytest.raises(ValueError, match="active_provider"):
         load_app_config(p)
+
+
+def test_gui_minimize_to_tray_parse(tmp_path: Path) -> None:
+    p = tmp_path / "gui.yaml"
+    p.write_text(
+        """
+asr:
+  base_url: "ws://127.0.0.1:6006"
+hotkey: {}
+delivery:
+  mode: paste_only
+  profile: p
+  profiles:
+    p:
+      actions:
+        - action: paste
+          keys: ["ctrl", "v"]
+history: {}
+audio: {}
+gui:
+  minimize_to_tray_on_close: false
+  auto_start_listening: false
+""",
+        encoding="utf-8",
+    )
+    cfg = load_app_config(p)
+    assert cfg.gui.minimize_to_tray_on_close is False
+    assert cfg.gui.auto_start_listening is False
