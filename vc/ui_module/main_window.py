@@ -6,11 +6,12 @@ from pathlib import Path
 
 import yaml
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QCloseEvent
+from PySide6.QtGui import QAction, QCloseEvent, QKeyEvent
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
     QFileDialog,
     QGridLayout,
     QHBoxLayout,
@@ -34,6 +35,108 @@ from vc.config import load_app_config_with_env
 from vc.app_module.entry import _setup_logging
 from vc.core_module.pipeline import VoicePipeline, warn_if_unsupported_platform
 from vc.lexicon_module.service import LexiconStore
+
+
+# ---------------------------------------------------------------------------
+# 热键捕获工具
+# ---------------------------------------------------------------------------
+
+_QT_KEY_MAP: dict[int, str] = {}
+
+
+def _build_qt_key_map() -> dict[int, str]:
+    m: dict[int, str] = {}
+    for i in range(1, 13):
+        attr = f"Key_F{i}"
+        k = getattr(Qt.Key, attr, None)
+        if k is not None:
+            m[k.value] = f"f{i}"
+    simple = {
+        Qt.Key.Key_Insert: "insert",
+        Qt.Key.Key_Delete: "delete",
+        Qt.Key.Key_Home: "home",
+        Qt.Key.Key_End: "end",
+        Qt.Key.Key_PageUp: "page_up",
+        Qt.Key.Key_PageDown: "page_down",
+        Qt.Key.Key_Pause: "pause",
+        Qt.Key.Key_ScrollLock: "scroll_lock",
+        Qt.Key.Key_Print: "print_screen",
+        Qt.Key.Key_CapsLock: "caps_lock",
+        Qt.Key.Key_Tab: "tab",
+        Qt.Key.Key_Escape: "esc",
+        Qt.Key.Key_Space: "space",
+        Qt.Key.Key_Backspace: "backspace",
+        Qt.Key.Key_Return: "enter",
+        Qt.Key.Key_Enter: "enter",
+        Qt.Key.Key_Up: "up",
+        Qt.Key.Key_Down: "down",
+        Qt.Key.Key_Left: "left",
+        Qt.Key.Key_Right: "right",
+    }
+    for qt_k, name in simple.items():
+        m[qt_k.value] = name
+    # A-Z → a-z
+    for c in range(ord("A"), ord("Z") + 1):
+        qt_k = getattr(Qt.Key, f"Key_{chr(c)}", None)
+        if qt_k is not None:
+            m[qt_k.value] = chr(c).lower()
+    # 0-9
+    for c in range(ord("0"), ord("9") + 1):
+        qt_k = getattr(Qt.Key, f"Key_{chr(c)}", None)
+        if qt_k is not None:
+            m[qt_k.value] = chr(c)
+    return m
+
+
+def _qt_key_to_str(key: int) -> str:
+    """将 Qt 键值转为热键配置字符串，附加可选修饰键前缀。"""
+    global _QT_KEY_MAP
+    if not _QT_KEY_MAP:
+        _QT_KEY_MAP = _build_qt_key_map()
+    return _QT_KEY_MAP.get(key, "")
+
+
+_MODIFIER_KEYS = frozenset({
+    Qt.Key.Key_Control.value, Qt.Key.Key_Shift.value,
+    Qt.Key.Key_Alt.value, Qt.Key.Key_Meta.value,
+})
+
+
+class _KeyCaptureDialog(QDialog):
+    """等待用户按一个非修饰键，将其转换为热键配置字符串后关闭。"""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("捕获热键")
+        self.setModal(True)
+        self.setFixedSize(340, 120)
+        self.captured: str = ""
+        layout = QVBoxLayout(self)
+        self._label = QLabel("请按下新的 Push-to-talk 热键\n（F1–F12、Insert、Pause 等单键最适合）")
+        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._label)
+        btn = QPushButton("取消")
+        btn.clicked.connect(self.reject)
+        layout.addWidget(btn)
+
+    def showEvent(self, event: object) -> None:
+        super().showEvent(event)  # type: ignore[arg-type]
+        self.grabKeyboard()
+
+    def hideEvent(self, event: object) -> None:
+        self.releaseKeyboard()
+        super().hideEvent(event)  # type: ignore[arg-type]
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        key = event.key()
+        if key in _MODIFIER_KEYS:
+            return  # 忽略单独的修饰键
+        key_str = _qt_key_to_str(key)
+        if key_str:
+            self.captured = key_str
+            self.accept()
+        else:
+            self._label.setText("不支持此按键，请重试（建议使用 F1–F12）")
 
 
 class Bridge(QObject):
@@ -100,13 +203,38 @@ class MainWindow(QMainWindow):
         g.addWidget(self.minimize_to_tray_chk, 5, 0, 1, 3)
 
         self.default_enable_chk = QCheckBox("程序启动后自动开始监听并启用识别（保存到配置）")
-        self.default_enable_chk.setToolTip("勾选后，打开 GUI 会自动开始监听；取消勾选后需手动点击“开始监听”。")
+        self.default_enable_chk.setToolTip('勾选后，打开 GUI 会自动开始监听；取消勾选后需手动点击"开始监听"。')
         self.default_enable_chk.setChecked(True)
         self.default_enable_chk.stateChanged.connect(self._on_default_enable_changed)
         g.addWidget(self.default_enable_chk, 6, 0, 1, 3)
 
+        # 热键配置
+        g.addWidget(QLabel("按住说话（PTT）"), 7, 0)
+        self.ptt_key_edit = QLineEdit("f8")
+        self.ptt_key_edit.setToolTip("按住此键录音，松开后识别。例：f8、insert、pause")
+        g.addWidget(self.ptt_key_edit, 7, 1)
+        self.btn_capture_ptt = QPushButton("捕获按键")
+        self.btn_capture_ptt.setToolTip("点击后按下目标键自动填入")
+        self.btn_capture_ptt.clicked.connect(self._capture_ptt_key)
+        g.addWidget(self.btn_capture_ptt, 7, 2)
+
+        g.addWidget(QLabel("退出热键"), 8, 0)
+        self.quit_key_edit = QLineEdit("ctrl+q")
+        self.quit_key_edit.setToolTip("组合键格式：ctrl+q、alt+f4 等")
+        g.addWidget(self.quit_key_edit, 8, 1, 1, 2)
+
+        g.addWidget(QLabel("重录热键"), 9, 0)
+        self.rerecord_key_edit = QLineEdit("ctrl+shift+r")
+        self.rerecord_key_edit.setToolTip("组合键格式：ctrl+shift+r 等")
+        g.addWidget(self.rerecord_key_edit, 9, 1, 1, 2)
+
+        self._hotkey_note = QLabel("⚠ 更改热键后需重启监听")
+        self._hotkey_note.setStyleSheet("color: gray; font-size: 11px;")
+        self._hotkey_note.setVisible(False)
+        g.addWidget(self._hotkey_note, 10, 0, 1, 3)
+
         self.state_label = QLabel("状态: idle")
-        g.addWidget(self.state_label, 7, 0, 1, 3)
+        g.addWidget(self.state_label, 11, 0, 1, 3)
 
         h = QHBoxLayout()
         runtime_layout.addLayout(h)
@@ -278,11 +406,16 @@ class MainWindow(QMainWindow):
                 self.whitelist_edit.setText(", ".join(str(x) for x in wl if str(x).strip()))
             hotkey = data.get("hotkey") or {}
             gui = data.get("gui") or {}
+            # gui 区块优先加载，避免后续异常时 minimize_to_tray 停留在默认值 True
             if isinstance(gui, dict):
                 self.minimize_to_tray_chk.setChecked(bool(gui.get("minimize_to_tray_on_close", True)))
                 self.default_enable_chk.setChecked(
                     bool(gui.get("auto_start_listening", (hotkey or {}).get("recognition_enabled_on_start", True))),
                 )
+            if isinstance(hotkey, dict):
+                self.ptt_key_edit.setText(str(hotkey.get("push_to_talk") or "f8"))
+                self.quit_key_edit.setText(str(hotkey.get("quit") or "ctrl+q"))
+                self.rerecord_key_edit.setText(str(hotkey.get("rerecord") or "ctrl+shift+r"))
             lexicon = data.get("lexicon") or {}
             if isinstance(lexicon, dict):
                 self.lexicon_enabled_chk.setChecked(bool(lexicon.get("enabled", False)))
@@ -298,6 +431,11 @@ class MainWindow(QMainWindow):
         if self._loading_ui:
             return
         self._save_config_changes()
+
+    def _capture_ptt_key(self) -> None:
+        dlg = _KeyCaptureDialog(self)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.captured:
+            self.ptt_key_edit.setText(dlg.captured)
 
     def _save_config_changes(self) -> bool:
         cfg_path = Path(self.config_edit.text().strip())
@@ -322,8 +460,16 @@ class MainWindow(QMainWindow):
             hotkey = data.setdefault("hotkey", {})
             if not isinstance(hotkey, dict):
                 raise ValueError("hotkey 必须是对象")
-            # 保持识别启动默认值与 GUI 自动监听选项一致，避免双配置导致理解混乱。
             hotkey["recognition_enabled_on_start"] = bool(self.default_enable_chk.isChecked())
+            ptt = self.ptt_key_edit.text().strip().lower()
+            if ptt:
+                hotkey["push_to_talk"] = ptt
+            quit_k = self.quit_key_edit.text().strip().lower()
+            if quit_k:
+                hotkey["quit"] = quit_k
+            rerecord_k = self.rerecord_key_edit.text().strip().lower()
+            if rerecord_k:
+                hotkey["rerecord"] = rerecord_k
             gui = data.setdefault("gui", {})
             if not isinstance(gui, dict):
                 raise ValueError("gui 必须是对象")
@@ -415,7 +561,7 @@ class MainWindow(QMainWindow):
     def _delete_lexicon_term(self) -> None:
         term = self.lexicon_term_edit.text().strip()
         if not term:
-            QMessageBox.warning(self, "提示", "请先在“新增术语”中输入要删除的术语")
+            QMessageBox.warning(self, "提示", '请先在"新增术语"中输入要删除的术语')
             return
         db_path = self.lexicon_db_edit.text().strip() or "data/lexicon.db"
         domain = self.lexicon_domain_edit.text().strip() or "default"
@@ -522,6 +668,11 @@ class MainWindow(QMainWindow):
         self.btn_start.setEnabled(not running)
         self.btn_stop.setEnabled(running)
         self.btn_toggle_recognition.setEnabled(running)
+        # 监听运行期间禁止修改热键（需重启才能生效）
+        for w in (self.ptt_key_edit, self.quit_key_edit, self.rerecord_key_edit,
+                  self.btn_capture_ptt):
+            w.setEnabled(not running)
+        self._hotkey_note.setVisible(running)
         if state == "disabled":
             self._recognition_enabled = False
         elif state in ("idle", "recording", "recognizing", "delivering"):

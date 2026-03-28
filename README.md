@@ -152,6 +152,45 @@ Import command reports:
 
 - Python 3.8+
 - Windows 10+ (primary validated platform)
+- Linux (X11 and Wayland) — see setup notes below
+
+### Linux Setup
+
+**Install system audio library (all Linux):**
+
+```bash
+sudo apt install libportaudio2
+```
+
+**X11 sessions** — no extra steps required; pynput handles both global hotkeys and keyboard injection. Optionally install `xdotool` for window title detection (used by `delivery.window_whitelist`):
+
+```bash
+sudo apt install xdotool
+```
+
+**Wayland sessions** — keyboard injection uses `/dev/uinput` (kernel-level virtual keyboard, works on all compositors including GNOME). Two setup steps required:
+
+1. Create a udev rule to grant the `input` group write access to `/dev/uinput` (one-time, takes effect immediately):
+
+```bash
+echo 'KERNEL=="uinput", GROUP="input", MODE="0660"' | sudo tee /etc/udev/rules.d/99-uinput.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+2. Add your user to the `input` group (needed for both hotkey detection and uinput injection), then re-login:
+
+```bash
+sudo usermod -aG input $USER
+# Log out and back in for the group change to take effect
+```
+
+> **Note:** Wayland sessions use `evdev` to read keyboard events (global hotkeys) and `evdev.UInput` to inject keystrokes at the kernel level. This bypasses Wayland compositor protocol restrictions and works on GNOME, KDE, sway, and others. Without the udev rule and `input` group membership, both hotkeys and text delivery will fail.
+
+**Wayland clipboard** — `wl-clipboard` is required and is usually pre-installed on Wayland desktops. If not:
+
+```bash
+sudo apt install wl-clipboard
+```
 
 ## Documentation
 
@@ -220,20 +259,30 @@ Output directory:
 
 ## Known Limitations
 
-- Primary validation target is Windows
+- Primary validation target is Windows; Linux support is functional but less tested
 - `Ctrl+Shift+R` is reserved and may be expanded in future versions
 - GUI automation behavior depends on target app focus and keyboard handling
+- On Wayland, keyboard injection uses `/dev/uinput` (kernel-level), which works across all compositors and both native Wayland and XWayland apps
 
 ## FAQ
 
-- **ASR connection refused (10061)?**  
+- **ASR connection refused (10061)?**
   Check ASR service status, host, port, and firewall rules.
 
-- **DashScope key not found?**  
+- **DashScope key not found?**
   Ensure `dashscope_api_key_env` points to an environment variable name such as `DASHSCOPE_API_KEY`.
 
-- **Only paste, no send?**  
+- **Only paste, no send?**
   Verify `delivery.mode` and `delivery.auto_send_enter`.
+
+- **Linux: F8 hotkey not detected?**
+  On Wayland, run `sudo usermod -aG input $USER` and re-login so evdev can read keyboard devices.
+
+- **Linux: Text recognised but not delivered to window?**
+  On Wayland, ensure the udev rule for `/dev/uinput` is in place and your user is in the `input` group (see Linux Setup above). Without these, keyboard injection will fail.
+
+- **Linux: Clipboard errors?**
+  Install `wl-clipboard` (`sudo apt install wl-clipboard`) for Wayland clipboard support.
 
 ## SEO Keywords
 
