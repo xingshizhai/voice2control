@@ -9,7 +9,7 @@ from typing import Callable
 
 from vc.asr_module.client import ASRError, build_asr_client
 from vc.backends.clipboard import PyperclipClipboard
-from vc.backends.keyboard import KeyboardTap
+from vc.backends.keyboard import build_keyboard_backend
 from vc.config import AppConfig
 from vc.core_module.history import TextHistory
 from vc.input_module.audio import AudioRecorder
@@ -46,7 +46,7 @@ class VoicePipeline:
         )
         self._asr = build_asr_client(cfg.asr)
         self._clipboard = PyperclipClipboard()
-        self._keyboard = KeyboardTap()
+        self._keyboard = build_keyboard_backend()
         self._deliverer = Deliverer(cfg.delivery, self._clipboard, self._keyboard)
         self._history = TextHistory(cfg.history.max_items)
         self._lexicon = LexiconCorrector(cfg.lexicon)
@@ -89,6 +89,7 @@ class VoicePipeline:
 
     def run(self) -> None:
         self._unhook = register_hotkeys(self._cfg.hotkey, self._queue)
+        self._check_hotkey_ready()
         shutdown_cleanup = install_graceful_shutdown(self._queue)
         logger.info("语音管道已启动。按住 %s 说话，松开后识别并投递。", self._cfg.hotkey.push_to_talk)
         logger.info("配置 recognition_enabled_on_start=%s", self._recognition_enabled)
@@ -204,8 +205,49 @@ class VoicePipeline:
         logger.info("本轮完成")
 
 
+    def _check_hotkey_ready(self) -> None:
+        """在 Wayland 系统上检查 evdev 权限，若不足则通过 on_error 回调告知用户。"""
+        if sys.platform != "linux":
+            return
+        import os
+        session = os.environ.get("XDG_SESSION_TYPE", "")
+        wayland = bool(os.environ.get("WAYLAND_DISPLAY"))
+        if not (session == "wayland" or wayland):
+            return
+        try:
+            from evdev import list_devices
+            if not list(list_devices()):
+                msg = (
+                    "⚠ Wayland 全局热键不可用\n"
+                    "当前用户无权读取 /dev/input/event*（需要 input 组）。\n"
+                    "请在终端执行后重新登录：\n"
+                    "  sudo usermod -aG input $USER\n"
+                    "同时安装 Wayland 剪贴板支持：\n"
+                    "  sudo apt install wl-clipboard"
+                )
+                logger.warning(msg)
+                self._emit_error(msg)
+        except Exception:
+            pass
+
+
 def warn_if_unsupported_platform() -> None:
-    if sys.platform != "win32":
-        logger.warning(
-            "当前版本仅在 Windows 上完整验证热键与键盘投递；其他系统可能需管理员权限或不可用。",
+    import os
+    if sys.platform == "win32":
+        return
+    if sys.platform == "linux":
+        session = os.environ.get("XDG_SESSION_TYPE", "")
+        wayland = bool(os.environ.get("WAYLAND_DISPLAY"))
+        if session == "wayland" or wayland:
+            logger.info(
+                "Linux Wayland 模式：使用 evdev 全局热键。"
+                "若出现权限错误，请执行：sudo usermod -aG input $USER  并重新登录。"
+                "剪贴板需要 wl-clipboard：sudo apt install wl-clipboard"
+            )
+        else:
+            logger.info("Linux X11 模式：使用 pynput 提供热键与键盘投递支持。")
+    elif sys.platform == "darwin":
+        logger.info(
+            "macOS 模式：使用 pynput。"
+            "首次运行请在「系统设置 → 隐私与安全 → 辅助功能」中授予本程序权限。"
         )

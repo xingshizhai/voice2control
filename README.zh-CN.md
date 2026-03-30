@@ -170,6 +170,45 @@ tests/
 
 - Python 3.8+
 - Windows 10+（当前主验证平台）
+- Linux（X11 和 Wayland）— 见下方平台说明
+
+### Linux 平台说明
+
+**安装系统音频库（所有 Linux）：**
+
+```bash
+sudo apt install libportaudio2
+```
+
+**X11 会话** — 无需额外步骤，pynput 负责全局热键和键盘注入。可选安装 `xdotool` 用于读取前台窗口标题（`delivery.window_whitelist` 功能依赖此工具）：
+
+```bash
+sudo apt install xdotool
+```
+
+**Wayland 会话** — 按键注入通过 `/dev/uinput`（内核层虚拟键盘）实现，支持 GNOME、KDE、sway 等所有合成器。需要以下两步：
+
+1. 创建 udev 规则，授予 `input` 组对 `/dev/uinput` 的写权限（一次性，立即生效）：
+
+```bash
+echo 'KERNEL=="uinput", GROUP="input", MODE="0660"' | sudo tee /etc/udev/rules.d/99-uinput.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+2. 将当前用户加入 `input` 组（热键检测和按键注入都需要），然后重新登录：
+
+```bash
+sudo usermod -aG input $USER
+# 注销并重新登录后生效
+```
+
+> **说明：** Wayland 会话下，热键捕获通过 evdev 读取 `/dev/input` 实现，按键注入通过 `evdev.UInput` 在内核层创建虚拟键盘实现。这种方式绕过了 Wayland 合成器的协议限制，不依赖合成器是否支持特定协议（GNOME 不支持 wtype 所需协议，但此方案完全兼容）。未配置 udev 规则或未加入 `input` 组时，热键和投递均无法使用。
+
+**Wayland 剪贴板** — 依赖 `wl-clipboard`，大多数 Wayland 桌面已预装。如未安装：
+
+```bash
+sudo apt install wl-clipboard
+```
 
 ## 开发与测试
 
@@ -213,9 +252,10 @@ scripts\build.bat gui --onefile
 
 ## 已知限制
 
-- 当前主要在 Windows 平台验证
+- 当前主要在 Windows 平台验证，Linux 支持已可用但测试较少
 - `Ctrl+Shift+R` 为预留热键，后续会扩展更多重录能力
 - GUI 自动投递依赖目标应用的焦点和键盘处理行为
+- Wayland 下按键注入通过 `/dev/uinput`（内核层）实现，兼容所有合成器及原生 Wayland、XWayland 应用
 
 ## 相关关键词（SEO）
 
@@ -230,14 +270,23 @@ scripts\build.bat gui --onefile
 
 ## 常见问题
 
-- **ASR 连接被拒绝（10061）？**  
+- **ASR 连接被拒绝（10061）？**
   检查 ASR 服务是否启动、地址端口是否正确、防火墙是否拦截。
 
-- **DashScope Key 未读取到？**  
+- **DashScope Key 未读取到？**
   确保 `dashscope_api_key_env` 填的是环境变量名（如 `DASHSCOPE_API_KEY`）。
 
-- **只粘贴不发送？**  
+- **只粘贴不发送？**
   检查 `delivery.mode` 与 `delivery.auto_send_enter`。
+
+- **Linux：F8 热键无响应？**
+  Wayland 下需执行 `sudo usermod -aG input $USER` 并重新登录，使 evdev 能读取键盘设备。
+
+- **Linux：识别成功但文字未输入到窗口？**
+  Wayland 下需确保已创建 `/dev/uinput` 的 udev 规则且用户在 `input` 组中（见上方 Linux 平台说明）。
+
+- **Linux：剪贴板报错？**
+  安装 `wl-clipboard`（`sudo apt install wl-clipboard`）以支持 Wayland 剪贴板。
 
 ## 贡献
 
