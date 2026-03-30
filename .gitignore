@@ -11,3 +11,4 @@ config.yaml
 build/
 dist/
 *.spec
+lexicon.db
