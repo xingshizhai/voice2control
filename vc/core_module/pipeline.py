@@ -5,6 +5,7 @@ import queue
 import sys
 import threading
 import time
+from array import array
 from typing import Callable
 
 from vc.asr_module.client import ASRError, build_asr_client
@@ -36,6 +37,8 @@ class VoicePipeline:
         self._state: str = "idle"
         self._recognition_enabled = cfg.hotkey.recognition_enabled_on_start
         self._stop_event = threading.Event()
+        self._ptt_is_down = False
+        self._silence_started_at: float | None = None
         self._on_state = on_state
         self._on_transcript = on_transcript
         self._on_error = on_error
@@ -90,7 +93,16 @@ class VoicePipeline:
     def run(self) -> None:
         self._unhook = register_hotkeys(self._cfg.hotkey, self._queue)
         shutdown_cleanup = install_graceful_shutdown(self._queue)
-        logger.info("语音管道已启动。按住 %s 说话，松开后识别并投递。", self._cfg.hotkey.push_to_talk)
+        if self._cfg.hotkey.trigger_mode == "toggle":
+            logger.info("语音管道已启动。按 %s 开始录音，再按一次结束并识别投递。", self._cfg.hotkey.push_to_talk)
+        else:
+            logger.info("语音管道已启动。按住 %s 说话，松开后识别并投递。", self._cfg.hotkey.push_to_talk)
+        if self._cfg.vad.enabled and self._cfg.hotkey.trigger_mode == "toggle":
+            logger.info(
+                "VAD 自动结束已启用：静音阈值=%dms 能量阈值=%d",
+                self._cfg.vad.silence_threshold_ms,
+                self._cfg.vad.energy_threshold,
+            )
         logger.info("配置 recognition_enabled_on_start=%s", self._recognition_enabled)
         if self._recognition_enabled:
             self._emit_state("idle")
@@ -103,6 +115,7 @@ class VoicePipeline:
                 try:
                     evt = self._queue.get(timeout=0.2)
                 except queue.Empty:
+                    self._maybe_auto_stop_recording_by_vad()
                     continue
                 if not self._dispatch(evt):
                     break
@@ -121,6 +134,7 @@ class VoicePipeline:
         if kind == "cancel":
             if self._state == "recording":
                 self._recorder.cancel()
+                self._silence_started_at = None
                 self._emit_state("idle")
                 logger.info("已取消录音")
             return True
@@ -144,28 +158,88 @@ class VoicePipeline:
             return True
         phase = evt[1] if len(evt) > 1 else ""
         if phase == "down":
+            if self._ptt_is_down:
+                return True
+            self._ptt_is_down = True
             if not self._recognition_enabled:
                 logger.debug("识别已禁用，忽略按下录音热键")
+                return True
+            if self._cfg.hotkey.trigger_mode == "toggle":
+                if self._state == "idle":
+                    self._recorder.start()
+                    self._silence_started_at = None
+                    self._emit_state("recording")
+                    logger.info("开始录音（toggle）")
+                elif self._state == "recording":
+                    self._finalize_recording("toggle 手动结束")
                 return True
             if self._state != "idle":
                 return True
             self._recorder.start()
+            self._silence_started_at = None
             self._emit_state("recording")
             logger.info("开始录音")
             return True
         if phase == "up":
+            self._ptt_is_down = False
+            if self._cfg.hotkey.trigger_mode == "toggle":
+                return True
             if self._state != "recording":
                 return True
-            pcm = self._recorder.stop()
-            self._emit_state("recognizing")
-            if len(pcm) < _MIN_PCM_BYTES:
-                logger.warning("录音过短，已忽略")
-                self._emit_state("idle")
-                return True
-            self._process_audio(pcm)
-            self._emit_state("idle")
+            self._finalize_recording("松开热键")
             return True
         return True
+
+    def _finalize_recording(self, reason: str) -> None:
+        if self._state != "recording":
+            return
+        pcm = self._recorder.stop()
+        self._silence_started_at = None
+        self._emit_state("recognizing")
+        if len(pcm) < _MIN_PCM_BYTES:
+            logger.warning("录音过短，已忽略（%s）", reason)
+            self._emit_state("idle")
+            return
+        logger.info("录音结束：%s", reason)
+        self._process_audio(pcm)
+        self._emit_state("idle")
+
+    def _maybe_auto_stop_recording_by_vad(self) -> None:
+        if not self._cfg.vad.enabled or self._cfg.hotkey.trigger_mode != "toggle":
+            return
+        if self._state != "recording":
+            self._silence_started_at = None
+            return
+        pcm = self._recorder.snapshot()
+        if not pcm:
+            return
+        if self._is_recent_audio_silent(pcm):
+            now = time.perf_counter()
+            if self._silence_started_at is None:
+                self._silence_started_at = now
+                return
+            silent_ms = int((now - self._silence_started_at) * 1000)
+            if silent_ms >= self._cfg.vad.silence_threshold_ms:
+                self._finalize_recording(f"VAD 静音 {silent_ms}ms 自动结束")
+        else:
+            self._silence_started_at = None
+
+    def _is_recent_audio_silent(self, pcm: bytes) -> bool:
+        # PCM 16-bit little-endian，取末尾窗口计算平均绝对能量。
+        channels = max(1, self._cfg.audio.channels)
+        window_samples = int(self._cfg.audio.sample_rate * (self._cfg.vad.check_window_ms / 1000.0)) * channels
+        if window_samples <= 0:
+            return False
+        sample_count = len(pcm) // 2
+        if sample_count < window_samples:
+            return False
+        tail = pcm[-window_samples * 2 :]
+        samples = array("h")
+        samples.frombytes(tail)
+        if not samples:
+            return False
+        avg_energy = sum(abs(int(v)) for v in samples) / len(samples)
+        return avg_energy < self._cfg.vad.energy_threshold
 
     def _process_audio(self, pcm: bytes) -> None:
         t0 = time.perf_counter()

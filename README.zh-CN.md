@@ -135,8 +135,17 @@ LangChain,"lang chain,郎圈",default,100
 - `asr.providers.*`
 - `delivery.mode`
 - `delivery.auto_send_enter`
+- `hotkey.trigger_mode`
+- `vad.enabled`
 - `gui.minimize_to_tray_on_close`
 - `gui.auto_start_listening`
+- `gui.show_startup_guide`
+- `gui.show_floating_status`
+- `gui.floating_status_position`
+- `gui.floating_status_font_size`
+- `gui.floating_status_opacity`
+- `gui.floating_status_mode`
+- `gui.floating_status_x/y`
 - `lexicon.enabled`
 - `lexicon.db_path`
 - `lexicon.domain`

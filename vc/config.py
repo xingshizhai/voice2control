@@ -37,6 +37,7 @@ class HotkeyConfig:
     rerecord: str = "ctrl+shift+r"
     quit: str = "ctrl+q"
     recognition_enabled_on_start: bool = True
+    trigger_mode: str = "push_to_talk"
 
 
 @dataclass(frozen=True)
@@ -70,9 +71,25 @@ class AudioConfig:
 
 
 @dataclass(frozen=True)
+class VADConfig:
+    enabled: bool = False
+    silence_threshold_ms: int = 1500
+    energy_threshold: int = 500
+    check_window_ms: int = 320
+
+
+@dataclass(frozen=True)
 class GuiConfig:
     minimize_to_tray_on_close: bool = True
     auto_start_listening: bool = True
+    show_startup_guide: bool = True
+    show_floating_status: bool = True
+    floating_status_position: str = "bottom_right"
+    floating_status_font_size: int = 12
+    floating_status_opacity: int = 220
+    floating_status_x: int | None = None
+    floating_status_y: int | None = None
+    floating_status_mode: str = "always"
 
 
 @dataclass(frozen=True)
@@ -89,6 +106,7 @@ class AppConfig:
     delivery: DeliveryConfig
     history: HistoryConfig
     audio: AudioConfig
+    vad: VADConfig
     gui: GuiConfig
     lexicon: LexiconConfig
 
@@ -208,11 +226,15 @@ def load_app_config(path: Path | str) -> AppConfig:
     hk_raw = data.get("hotkey") or {}
     if not isinstance(hk_raw, dict):
         raise ValueError("hotkey 必须为对象")
+    trigger_mode = str(hk_raw.get("trigger_mode") or "push_to_talk").strip().lower()
+    if trigger_mode not in ("push_to_talk", "toggle"):
+        trigger_mode = "push_to_talk"
     hotkey = HotkeyConfig(
         push_to_talk=str(hk_raw.get("push_to_talk") or "f8").strip().lower(),
         rerecord=str(hk_raw.get("rerecord") or "ctrl+shift+r").strip().lower(),
         quit=str(hk_raw.get("quit") or "ctrl+q").strip().lower(),
         recognition_enabled_on_start=bool(hk_raw.get("recognition_enabled_on_start", True)),
+        trigger_mode=trigger_mode,
     )
 
     del_raw = data.get("delivery") or {}
@@ -253,12 +275,49 @@ def load_app_config(path: Path | str) -> AppConfig:
         channels=int(aud_raw.get("channels", 1)),
         max_seconds=float(aud_raw.get("max_seconds", 60.0)),
     )
+    vad_raw = data.get("vad") or {}
+    if not isinstance(vad_raw, dict):
+        raise ValueError("vad 必须为对象")
+    vad = VADConfig(
+        enabled=bool(vad_raw.get("enabled", False)),
+        silence_threshold_ms=max(300, int(vad_raw.get("silence_threshold_ms", 1500))),
+        energy_threshold=max(50, int(vad_raw.get("energy_threshold", 500))),
+        check_window_ms=max(120, int(vad_raw.get("check_window_ms", 320))),
+    )
     gui_raw = data.get("gui") or {}
     if not isinstance(gui_raw, dict):
         raise ValueError("gui 必须为对象")
+    floating_position = str(gui_raw.get("floating_status_position") or "bottom_right").strip().lower()
+    if floating_position not in ("bottom_right", "bottom_left"):
+        floating_position = "bottom_right"
+    try:
+        floating_font_size = int(gui_raw.get("floating_status_font_size", 12))
+    except (TypeError, ValueError):
+        floating_font_size = 12
+    floating_font_size = max(10, min(18, floating_font_size))
+    try:
+        floating_opacity = int(gui_raw.get("floating_status_opacity", 220))
+    except (TypeError, ValueError):
+        floating_opacity = 220
+    floating_opacity = max(120, min(255, floating_opacity))
+    floating_x_raw = gui_raw.get("floating_status_x")
+    floating_y_raw = gui_raw.get("floating_status_y")
+    floating_x = int(floating_x_raw) if isinstance(floating_x_raw, int) else None
+    floating_y = int(floating_y_raw) if isinstance(floating_y_raw, int) else None
+    floating_mode = str(gui_raw.get("floating_status_mode") or "always").strip().lower()
+    if floating_mode not in ("always", "recording_only"):
+        floating_mode = "always"
     gui = GuiConfig(
         minimize_to_tray_on_close=bool(gui_raw.get("minimize_to_tray_on_close", True)),
         auto_start_listening=bool(gui_raw.get("auto_start_listening", True)),
+        show_startup_guide=bool(gui_raw.get("show_startup_guide", True)),
+        show_floating_status=bool(gui_raw.get("show_floating_status", True)),
+        floating_status_position=floating_position,
+        floating_status_font_size=floating_font_size,
+        floating_status_opacity=floating_opacity,
+        floating_status_x=floating_x,
+        floating_status_y=floating_y,
+        floating_status_mode=floating_mode,
     )
     lex_raw = data.get("lexicon") or {}
     if not isinstance(lex_raw, dict):
@@ -275,6 +334,7 @@ def load_app_config(path: Path | str) -> AppConfig:
         delivery=delivery,
         history=history,
         audio=audio,
+        vad=vad,
         gui=gui,
         lexicon=lexicon,
     )
@@ -304,6 +364,7 @@ def load_app_config_with_env(path: Path | str) -> AppConfig:
             delivery=cfg.delivery,
             history=cfg.history,
             audio=cfg.audio,
+            vad=cfg.vad,
             gui=cfg.gui,
             lexicon=cfg.lexicon,
         )

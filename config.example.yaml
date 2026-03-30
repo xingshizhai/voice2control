@@ -35,18 +35,44 @@ audio:
   channels: 1
   max_seconds: 60
 
+vad:
+  # 仅在 toggle 录音模式下生效：静音持续达到阈值时自动结束录音
+  enabled: false
+  silence_threshold_ms: 1500
+  # PCM 平均能量阈值（越小越敏感）
+  energy_threshold: 500
+  # 能量检测窗口（毫秒）
+  check_window_ms: 320
+
 hotkey:
   push_to_talk: "f8"
   rerecord: "ctrl+shift+r"
   quit: "ctrl+q"
   # 监听启动后，识别是否默认开启
   recognition_enabled_on_start: true
+  # 录音触发方式：push_to_talk(按住) | toggle(按一次开始、再按一次结束)
+  trigger_mode: "push_to_talk"
 
 gui:
   # 点击窗口关闭按钮时，是否最小化到系统托盘而不是直接退出
   minimize_to_tray_on_close: true
   # 打开 GUI 后是否自动开始监听
   auto_start_listening: true
+  # 首次启动时显示快速上手提示，可在提示框中关闭
+  show_startup_guide: true
+  # 是否显示跨窗口悬浮状态条（录音中/识别中/投递中）
+  show_floating_status: true
+  # 悬浮状态条位置：bottom_right | bottom_left
+  floating_status_position: "bottom_right"
+  # 悬浮状态条字号（建议 10~18）
+  floating_status_font_size: 12
+  # 悬浮状态条透明度（120~255，值越大越不透明）
+  floating_status_opacity: 220
+  # 悬浮条显示模式：always | recording_only
+  floating_status_mode: "always"
+  # 悬浮条拖拽后会自动写入坐标；手动留空表示按锚点位置显示
+  floating_status_x:
+  floating_status_y:
 
 lexicon:
   # 本地术语词库：在 ASR 后对文本做纠正替换

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 from pathlib import Path
 
 import yaml
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QCloseEvent
+from PySide6.QtGui import QAction, QCloseEvent, QMouseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -42,6 +43,103 @@ class Bridge(QObject):
     error = Signal(str)
 
 
+class FloatingStatusWindow(QWidget):
+    clicked = Signal()
+    position_changed = Signal(int, int)
+
+    def __init__(self) -> None:
+        super().__init__(None)
+        self.setWindowFlags(
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint,
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self._label = QLabel("语音助手待机")
+        self._position = "bottom_right"
+        self._font_size = 12
+        self._opacity = 220
+        self._manual_pos: tuple[int, int] | None = None
+        self._drag_offset: tuple[int, int] | None = None
+        self._apply_style()
+        layout.addWidget(self._label)
+        self._auto_hide_timer = QTimer(self)
+        self._auto_hide_timer.setSingleShot(True)
+        self._auto_hide_timer.timeout.connect(self.hide)
+        self.adjustSize()
+
+    def show_message(self, text: str, auto_hide_ms: int = 0) -> None:
+        self._label.setText(text)
+        self._label.adjustSize()
+        self.adjustSize()
+        self._move_to_anchor()
+        self.show()
+        if auto_hide_ms > 0:
+            self._auto_hide_timer.start(auto_hide_ms)
+        else:
+            self._auto_hide_timer.stop()
+
+    def _move_to_anchor(self) -> None:
+        if self._manual_pos is not None:
+            self.move(self._manual_pos[0], self._manual_pos[1])
+            return
+        screen = QApplication.primaryScreen()
+        if not screen:
+            return
+        area = screen.availableGeometry()
+        x = area.right() - self.width() - 24
+        if self._position == "bottom_left":
+            x = area.left() + 24
+        self.move(x, area.bottom() - self.height() - 24)
+
+    def set_display_options(
+        self,
+        *,
+        position: str,
+        font_size: int,
+        opacity: int,
+        manual_pos: tuple[int, int] | None,
+    ) -> None:
+        self._position = position if position in ("bottom_right", "bottom_left") else "bottom_right"
+        self._font_size = max(10, min(18, int(font_size)))
+        self._opacity = max(120, min(255, int(opacity)))
+        self._manual_pos = manual_pos
+        self._apply_style()
+        self._move_to_anchor()
+
+    def _apply_style(self) -> None:
+        self._label.setStyleSheet(
+            f"background-color: rgba(30, 41, 59, {self._opacity});"
+            "color: #f8fafc;"
+            "border-radius: 8px;"
+            "padding: 8px 12px;"
+            f"font-size: {self._font_size}px;",
+        )
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            pos = event.globalPosition().toPoint()
+            self._drag_offset = (pos.x() - self.x(), pos.y() - self.y())
+        self.clicked.emit()
+        return super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._drag_offset is not None and (event.buttons() & Qt.MouseButton.LeftButton):
+            pos = event.globalPosition().toPoint()
+            new_x = pos.x() - self._drag_offset[0]
+            new_y = pos.y() - self._drag_offset[1]
+            self.move(new_x, new_y)
+            self._manual_pos = (new_x, new_y)
+            self.position_changed.emit(new_x, new_y)
+        return super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        self._drag_offset = None
+        return super().mouseReleaseEvent(event)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -53,6 +151,25 @@ class MainWindow(QMainWindow):
         self._exiting = False
         self._loading_ui = False
         self._recognition_enabled = False
+        self._push_to_talk_key = "F8"
+        self._show_startup_guide = True
+        self._show_floating_status = True
+        self._floating_position = "bottom_right"
+        self._floating_font_size = 12
+        self._floating_opacity = 220
+        self._floating_manual_pos: tuple[int, int] | None = None
+        self._floating_mode = "always"
+        self._strategy_hint_shown_in_session = False
+        self._recognize_started_at: float | None = None
+        self._floating_status = FloatingStatusWindow()
+        self._floating_status.set_display_options(
+            position=self._floating_position,
+            font_size=self._floating_font_size,
+            opacity=self._floating_opacity,
+            manual_pos=self._floating_manual_pos,
+        )
+        self._floating_status.clicked.connect(self._show_from_tray)
+        self._floating_status.position_changed.connect(self._on_floating_position_changed)
         self._bridge = Bridge()
         self._bridge.state.connect(self._on_state)
         self._bridge.transcript.connect(self._on_transcript)
@@ -71,42 +188,149 @@ class MainWindow(QMainWindow):
         runtime_layout.addLayout(g)
         tabs.addTab(runtime_tab, "运行配置")
 
-        g.addWidget(QLabel("配置文件"), 0, 0)
-        self.config_edit = QLineEdit(str(Path("config.yaml").resolve()))
-        g.addWidget(self.config_edit, 0, 1)
-        btn_browse = QPushButton("浏览")
-        btn_browse.clicked.connect(self._browse_config)
-        g.addWidget(btn_browse, 0, 2)
-
-        g.addWidget(QLabel("ASR Provider"), 1, 0)
+        g.addWidget(QLabel("ASR Provider"), 0, 0)
         self.provider_combo = QComboBox()
-        g.addWidget(self.provider_combo, 1, 1, 1, 2)
+        g.addWidget(self.provider_combo, 0, 1, 1, 2)
 
-        g.addWidget(QLabel("投递模式"), 2, 0)
+        g.addWidget(QLabel("投递模式"), 1, 0)
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["paste_and_send", "paste_only", "review"])
-        g.addWidget(self.mode_combo, 2, 1, 1, 2)
+        g.addWidget(self.mode_combo, 1, 1, 1, 2)
+        self.state_label = QLabel("状态: idle")
+        g.addWidget(self.state_label, 2, 0, 1, 3)
+        self.strategy_label = QLabel("录音策略: Push-to-Talk")
+        self.strategy_label.setStyleSheet("color: #495057;")
+        g.addWidget(self.strategy_label, 3, 0, 1, 3)
+        self.hint_label = QLabel("")
+        self.hint_label.setWordWrap(True)
+        self.hint_label.setStyleSheet("color: #0b7285;")
+        g.addWidget(self.hint_label, 4, 0, 1, 3)
+        self.cross_app_hint_label = QLabel(
+            "使用提示：启动监听后可切换到其他应用窗口，按 F8 录音识别，松开后自动把结果投递到当前前台窗口。",
+        )
+        self.cross_app_hint_label.setWordWrap(True)
+        self.cross_app_hint_label.setStyleSheet("color: #495057;")
+        g.addWidget(self.cross_app_hint_label, 5, 0, 1, 3)
+        g.addWidget(QLabel("最近识别结果（运行预览）"), 6, 0, 1, 3)
+        self.runtime_preview = QTextEdit()
+        self.runtime_preview.setReadOnly(True)
+        self.runtime_preview.setPlaceholderText("识别后会在此显示最新结果，便于快速验证效果。")
+        self.runtime_preview.setMaximumHeight(120)
+        g.addWidget(self.runtime_preview, 7, 0, 1, 3)
+        self._update_runtime_hint("idle")
+        trigger_layout = QHBoxLayout()
+        trigger_layout.addWidget(QLabel("录音触发模式"))
+        self.trigger_mode_combo = QComboBox()
+        self.trigger_mode_combo.addItem("按住说话（Push-to-Talk）", "push_to_talk")
+        self.trigger_mode_combo.addItem("点击切换（Toggle）", "toggle")
+        self.trigger_mode_combo.currentIndexChanged.connect(self._on_trigger_mode_changed)
+        trigger_layout.addWidget(self.trigger_mode_combo)
+        self.vad_enabled_chk = QCheckBox("启用 VAD 自动结束（仅 Toggle 生效）")
+        self.vad_enabled_chk.stateChanged.connect(self._on_vad_changed)
+        trigger_layout.addWidget(self.vad_enabled_chk)
+        self.vad_mode_hint_label = QLabel("")
+        self.vad_mode_hint_label.setStyleSheet("color: #868e96;")
+        trigger_layout.addWidget(self.vad_mode_hint_label)
+        trigger_layout.addStretch(1)
+        runtime_layout.addLayout(trigger_layout)
+
+        # 高级设置页
+        advanced_tab = QWidget()
+        advanced_layout = QVBoxLayout(advanced_tab)
+        ag = QGridLayout()
+        advanced_layout.addLayout(ag)
+        tabs.addTab(advanced_tab, "高级设置")
+
+        lbl_system = QLabel("系统行为")
+        lbl_system.setStyleSheet("font-weight: 600; color: #343a40;")
+        ag.addWidget(lbl_system, 0, 0, 1, 3)
+        ag.addWidget(QLabel("配置文件"), 1, 0)
+        self.config_edit = QLineEdit(str(Path("config.yaml").resolve()))
+        ag.addWidget(self.config_edit, 1, 1)
+        btn_browse = QPushButton("浏览")
+        btn_browse.clicked.connect(self._browse_config)
+        ag.addWidget(btn_browse, 1, 2)
 
         self.auto_send_chk = QCheckBox("自动发送回车（Enter）")
-        g.addWidget(self.auto_send_chk, 3, 0, 1, 3)
-
-        g.addWidget(QLabel("窗口白名单"), 4, 0)
+        self.auto_send_chk.setToolTip("识别文本粘贴后自动发送回车，适合聊天窗口。")
+        ag.addWidget(self.auto_send_chk, 2, 0, 1, 3)
+        ag.addWidget(QLabel("窗口白名单"), 3, 0)
         self.whitelist_edit = QLineEdit("")
         self.whitelist_edit.setPlaceholderText("逗号分隔，例如：Cursor, Notepad++")
-        g.addWidget(self.whitelist_edit, 4, 1, 1, 2)
+        self.whitelist_edit.setToolTip("仅当前台窗口标题命中白名单时才执行文本投递。")
+        ag.addWidget(self.whitelist_edit, 3, 1, 1, 2)
 
         self.minimize_to_tray_chk = QCheckBox("关闭窗口时最小化到托盘")
         self.minimize_to_tray_chk.setChecked(True)
-        g.addWidget(self.minimize_to_tray_chk, 5, 0, 1, 3)
-
+        self.minimize_to_tray_chk.setToolTip("关闭主窗口后继续后台运行，可在系统托盘恢复。")
+        ag.addWidget(self.minimize_to_tray_chk, 4, 0, 1, 3)
         self.default_enable_chk = QCheckBox("程序启动后自动开始监听并启用识别（保存到配置）")
         self.default_enable_chk.setToolTip("勾选后，打开 GUI 会自动开始监听；取消勾选后需手动点击“开始监听”。")
         self.default_enable_chk.setChecked(True)
         self.default_enable_chk.stateChanged.connect(self._on_default_enable_changed)
-        g.addWidget(self.default_enable_chk, 6, 0, 1, 3)
+        ag.addWidget(self.default_enable_chk, 5, 0, 1, 3)
 
-        self.state_label = QLabel("状态: idle")
-        g.addWidget(self.state_label, 7, 0, 1, 3)
+        lbl_float = QLabel("悬浮与VAD")
+        lbl_float.setStyleSheet("font-weight: 600; color: #343a40;")
+        ag.addWidget(lbl_float, 6, 0, 1, 3)
+        self.show_floating_status_chk = QCheckBox("显示跨窗口悬浮状态提示")
+        self.show_floating_status_chk.setChecked(True)
+        self.show_floating_status_chk.stateChanged.connect(self._on_show_floating_status_changed)
+        self.show_floating_status_chk.setToolTip("切换到其他应用时，悬浮条显示录音/识别/投递状态。")
+        ag.addWidget(self.show_floating_status_chk, 7, 0, 1, 3)
+        ag.addWidget(QLabel("悬浮条显示模式"), 8, 0)
+        self.floating_mode_combo = QComboBox()
+        self.floating_mode_combo.addItem("始终显示关键状态", "always")
+        self.floating_mode_combo.addItem("仅录音/识别时显示", "recording_only")
+        self.floating_mode_combo.currentIndexChanged.connect(self._on_floating_style_changed)
+        self.floating_mode_combo.setToolTip("可降低打扰：仅在录音/识别阶段显示悬浮提示。")
+        ag.addWidget(self.floating_mode_combo, 8, 1, 1, 2)
+        ag.addWidget(QLabel("悬浮条位置"), 9, 0)
+        self.floating_position_combo = QComboBox()
+        self.floating_position_combo.addItem("右下角", "bottom_right")
+        self.floating_position_combo.addItem("左下角", "bottom_left")
+        self.floating_position_combo.currentIndexChanged.connect(self._on_floating_style_changed)
+        self.floating_position_combo.setToolTip("选择悬浮条默认锚点，拖拽后会记忆实际位置。")
+        ag.addWidget(self.floating_position_combo, 9, 1, 1, 2)
+        ag.addWidget(QLabel("悬浮条字号"), 10, 0)
+        self.floating_font_combo = QComboBox()
+        self.floating_font_combo.addItem("小 (11)", 11)
+        self.floating_font_combo.addItem("标准 (12)", 12)
+        self.floating_font_combo.addItem("大 (14)", 14)
+        self.floating_font_combo.currentIndexChanged.connect(self._on_floating_style_changed)
+        self.floating_font_combo.setToolTip("调节悬浮条文本大小，适配不同分辨率。")
+        ag.addWidget(self.floating_font_combo, 10, 1, 1, 2)
+        ag.addWidget(QLabel("悬浮条透明度"), 11, 0)
+        self.floating_opacity_combo = QComboBox()
+        self.floating_opacity_combo.addItem("低 (160)", 160)
+        self.floating_opacity_combo.addItem("标准 (220)", 220)
+        self.floating_opacity_combo.addItem("高 (245)", 245)
+        self.floating_opacity_combo.currentIndexChanged.connect(self._on_floating_style_changed)
+        self.floating_opacity_combo.setToolTip("数值越高越不透明，建议 220。")
+        ag.addWidget(self.floating_opacity_combo, 11, 1)
+        self.btn_reset_floating_pos = QPushButton("重置悬浮条位置")
+        self.btn_reset_floating_pos.clicked.connect(self._reset_floating_position)
+        self.btn_reset_floating_pos.setToolTip("清除拖拽坐标并回到默认锚点位置。")
+        ag.addWidget(self.btn_reset_floating_pos, 11, 2)
+
+        ag.addWidget(QLabel("VAD 静音阈值(ms)"), 12, 0)
+        self.vad_silence_ms_edit = QLineEdit("1500")
+        self.vad_silence_ms_edit.setPlaceholderText("例如 1500")
+        self.vad_silence_ms_edit.editingFinished.connect(self._on_vad_changed)
+        self.vad_silence_ms_edit.setToolTip("静音持续达到该时长时自动结束录音（仅 Toggle 生效）。")
+        ag.addWidget(self.vad_silence_ms_edit, 12, 1)
+        ag.addWidget(QLabel("VAD 能量阈值"), 13, 0)
+        self.vad_energy_edit = QLineEdit("500")
+        self.vad_energy_edit.setPlaceholderText("例如 500")
+        self.vad_energy_edit.editingFinished.connect(self._on_vad_changed)
+        self.vad_energy_edit.setToolTip("越小越敏感，环境噪声大时可适当调高。")
+        ag.addWidget(self.vad_energy_edit, 13, 1)
+        ag.addWidget(QLabel("（仅在 Toggle 模式下生效）"), 13, 2)
+        self.btn_restore_recommended = QPushButton("恢复推荐设置")
+        self.btn_restore_recommended.setToolTip("恢复为推荐的稳定参数，并立即保存到配置文件。")
+        self.btn_restore_recommended.clicked.connect(self._restore_recommended_settings)
+        ag.addWidget(self.btn_restore_recommended, 14, 0, 1, 3)
+        self._sync_vad_controls()
 
         h = QHBoxLayout()
         runtime_layout.addLayout(h)
@@ -123,6 +347,10 @@ class MainWindow(QMainWindow):
         self.btn_toggle_recognition.clicked.connect(self._toggle_recognition)
         self.btn_save = QPushButton("保存配置")
         self.btn_save.clicked.connect(self._save_config_changes)
+        self.btn_copy_diag = QPushButton("复制诊断信息")
+        self.btn_copy_diag.setToolTip("复制当前配置、状态与最近错误，便于排查问题。")
+        self.btn_copy_diag.clicked.connect(self._copy_diagnostics)
+        h.addWidget(self.btn_copy_diag)
         h.addWidget(self.btn_save)
         h.addWidget(self.btn_toggle_recognition)
         h.addWidget(self.btn_start)
@@ -277,12 +505,75 @@ class MainWindow(QMainWindow):
             if isinstance(wl, list):
                 self.whitelist_edit.setText(", ".join(str(x) for x in wl if str(x).strip()))
             hotkey = data.get("hotkey") or {}
+            if isinstance(hotkey, dict):
+                push_to_talk = str(hotkey.get("push_to_talk") or "f8").strip()
+                self._push_to_talk_key = push_to_talk.upper() if push_to_talk else "F8"
+                trigger_mode = str(hotkey.get("trigger_mode") or "push_to_talk").strip().lower()
+                idx = self.trigger_mode_combo.findData(trigger_mode)
+                if idx >= 0:
+                    self.trigger_mode_combo.setCurrentIndex(idx)
+            vad = data.get("vad") or {}
+            if isinstance(vad, dict):
+                self.vad_enabled_chk.setChecked(bool(vad.get("enabled", False)))
+                try:
+                    silence_ms = int(vad.get("silence_threshold_ms", 1500))
+                except (TypeError, ValueError):
+                    silence_ms = 1500
+                try:
+                    energy_threshold = int(vad.get("energy_threshold", 500))
+                except (TypeError, ValueError):
+                    energy_threshold = 500
+                self.vad_silence_ms_edit.setText(str(max(300, silence_ms)))
+                self.vad_energy_edit.setText(str(max(50, energy_threshold)))
+            self._sync_vad_controls()
             gui = data.get("gui") or {}
             if isinstance(gui, dict):
                 self.minimize_to_tray_chk.setChecked(bool(gui.get("minimize_to_tray_on_close", True)))
                 self.default_enable_chk.setChecked(
                     bool(gui.get("auto_start_listening", (hotkey or {}).get("recognition_enabled_on_start", True))),
                 )
+                self._show_startup_guide = bool(gui.get("show_startup_guide", True))
+                self._show_floating_status = bool(gui.get("show_floating_status", True))
+                self._floating_position = str(gui.get("floating_status_position") or "bottom_right").strip().lower()
+                if self._floating_position not in ("bottom_right", "bottom_left"):
+                    self._floating_position = "bottom_right"
+                try:
+                    self._floating_font_size = int(gui.get("floating_status_font_size", 12))
+                except (TypeError, ValueError):
+                    self._floating_font_size = 12
+                self._floating_font_size = max(10, min(18, self._floating_font_size))
+                try:
+                    self._floating_opacity = int(gui.get("floating_status_opacity", 220))
+                except (TypeError, ValueError):
+                    self._floating_opacity = 220
+                self._floating_opacity = max(120, min(255, self._floating_opacity))
+                x_raw = gui.get("floating_status_x")
+                y_raw = gui.get("floating_status_y")
+                self._floating_manual_pos = (int(x_raw), int(y_raw)) if isinstance(x_raw, int) and isinstance(y_raw, int) else None
+                self._floating_mode = str(gui.get("floating_status_mode") or "always").strip().lower()
+                if self._floating_mode not in ("always", "recording_only"):
+                    self._floating_mode = "always"
+                self.show_floating_status_chk.setChecked(self._show_floating_status)
+                self._floating_status.setVisible(self._show_floating_status)
+                self._floating_status.set_display_options(
+                    position=self._floating_position,
+                    font_size=self._floating_font_size,
+                    opacity=self._floating_opacity,
+                    manual_pos=self._floating_manual_pos,
+                )
+                pos_idx = self.floating_position_combo.findData(self._floating_position)
+                if pos_idx >= 0:
+                    self.floating_position_combo.setCurrentIndex(pos_idx)
+                font_idx = self.floating_font_combo.findData(self._floating_font_size)
+                if font_idx >= 0:
+                    self.floating_font_combo.setCurrentIndex(font_idx)
+                opacity_idx = self.floating_opacity_combo.findData(self._floating_opacity)
+                if opacity_idx >= 0:
+                    self.floating_opacity_combo.setCurrentIndex(opacity_idx)
+                mode_idx = self.floating_mode_combo.findData(self._floating_mode)
+                if mode_idx >= 0:
+                    self.floating_mode_combo.setCurrentIndex(mode_idx)
+            self._update_runtime_hint("idle")
             lexicon = data.get("lexicon") or {}
             if isinstance(lexicon, dict):
                 self.lexicon_enabled_chk.setChecked(bool(lexicon.get("enabled", False)))
@@ -298,6 +589,199 @@ class MainWindow(QMainWindow):
         if self._loading_ui:
             return
         self._save_config_changes()
+
+    def _on_trigger_mode_changed(self, _index: int) -> None:
+        if self._loading_ui:
+            return
+        self._sync_vad_controls()
+        self._update_runtime_hint(self._state_label_state())
+        self._save_config_changes()
+
+    def _on_vad_changed(self, *_args: object) -> None:
+        if self._loading_ui:
+            return
+        self._update_strategy_label()
+        self._update_runtime_hint(self._state_label_state())
+        self._save_config_changes()
+
+    def _restore_recommended_settings(self) -> None:
+        self._loading_ui = True
+        try:
+            self.auto_send_chk.setChecked(True)
+            self.whitelist_edit.setText("")
+            self.minimize_to_tray_chk.setChecked(True)
+            self.default_enable_chk.setChecked(True)
+            self.show_floating_status_chk.setChecked(True)
+            mode_idx = self.floating_mode_combo.findData("recording_only")
+            if mode_idx >= 0:
+                self.floating_mode_combo.setCurrentIndex(mode_idx)
+            pos_idx = self.floating_position_combo.findData("bottom_right")
+            if pos_idx >= 0:
+                self.floating_position_combo.setCurrentIndex(pos_idx)
+            font_idx = self.floating_font_combo.findData(12)
+            if font_idx >= 0:
+                self.floating_font_combo.setCurrentIndex(font_idx)
+            opacity_idx = self.floating_opacity_combo.findData(220)
+            if opacity_idx >= 0:
+                self.floating_opacity_combo.setCurrentIndex(opacity_idx)
+            self._floating_manual_pos = None
+            self.vad_enabled_chk.setChecked(True)
+            self.vad_silence_ms_edit.setText("1500")
+            self.vad_energy_edit.setText("500")
+            self._sync_vad_controls()
+            self._update_strategy_label()
+            self._update_runtime_hint(self._state_label_state())
+        finally:
+            self._loading_ui = False
+        self._save_config_changes()
+        self.error_box.append("已恢复推荐设置并保存到配置文件。")
+
+    def _sync_vad_controls(self) -> None:
+        trigger_mode = str(self.trigger_mode_combo.currentData() or "push_to_talk")
+        enabled = trigger_mode == "toggle"
+        self.vad_enabled_chk.setEnabled(enabled)
+        self.vad_silence_ms_edit.setEnabled(enabled)
+        self.vad_energy_edit.setEnabled(enabled)
+        self.vad_mode_hint_label.setText("" if enabled else "VAD 仅在 Toggle 模式下生效")
+        self._update_strategy_label()
+
+    def _update_strategy_label(self) -> None:
+        trigger_mode = str(self.trigger_mode_combo.currentData() or "push_to_talk")
+        if trigger_mode == "toggle":
+            if self.vad_enabled_chk.isChecked():
+                self.strategy_label.setText("录音策略: Toggle + VAD 自动结束")
+            else:
+                self.strategy_label.setText("录音策略: Toggle（手动结束）")
+            return
+        self.strategy_label.setText("录音策略: Push-to-Talk（按下说话，松开结束）")
+
+    def _strategy_short_text(self) -> str:
+        trigger_mode = str(self.trigger_mode_combo.currentData() or "push_to_talk")
+        if trigger_mode == "toggle" and self.vad_enabled_chk.isChecked():
+            return "Toggle + VAD"
+        if trigger_mode == "toggle":
+            return "Toggle"
+        return "Push-to-Talk"
+
+    def _state_label_state(self) -> str:
+        text = self.state_label.text().strip()
+        return text.split(":", 1)[1].strip() if ":" in text else "idle"
+
+    def _on_show_floating_status_changed(self, _state: int) -> None:
+        if self._loading_ui:
+            return
+        self._show_floating_status = bool(self.show_floating_status_chk.isChecked())
+        if not self._show_floating_status:
+            self._floating_status.hide()
+        else:
+            self._floating_status.show_message("语音助手已启用悬浮提示")
+        self._save_config_changes()
+
+    def _on_floating_style_changed(self, _index: int) -> None:
+        if self._loading_ui:
+            return
+        self._floating_position = str(self.floating_position_combo.currentData() or "bottom_right")
+        try:
+            self._floating_font_size = int(self.floating_font_combo.currentData() or 12)
+        except (TypeError, ValueError):
+            self._floating_font_size = 12
+        try:
+            self._floating_opacity = int(self.floating_opacity_combo.currentData() or 220)
+        except (TypeError, ValueError):
+            self._floating_opacity = 220
+        self._floating_mode = str(self.floating_mode_combo.currentData() or "always")
+        self._floating_status.set_display_options(
+            position=self._floating_position,
+            font_size=self._floating_font_size,
+            opacity=self._floating_opacity,
+            manual_pos=self._floating_manual_pos,
+        )
+        self._save_config_changes()
+
+    def _on_floating_position_changed(self, x: int, y: int) -> None:
+        self._floating_manual_pos = (x, y)
+        self._save_config_changes()
+
+    def _reset_floating_position(self) -> None:
+        self._floating_manual_pos = None
+        self._floating_status.set_display_options(
+            position=self._floating_position,
+            font_size=self._floating_font_size,
+            opacity=self._floating_opacity,
+            manual_pos=self._floating_manual_pos,
+        )
+        self._save_config_changes()
+
+    def _copy_diagnostics(self) -> None:
+        payload = self._build_diagnostic_text()
+        QApplication.clipboard().setText(payload)
+        self.error_box.append("诊断信息已复制到剪贴板。")
+
+    def _build_diagnostic_text(self) -> str:
+        cfg_path = Path(self.config_edit.text().strip())
+        active_provider = self.provider_combo.currentText().strip() or "(unknown)"
+        mode = self.mode_combo.currentText().strip() or "(unknown)"
+        errors = [line.strip() for line in self.error_box.toPlainText().splitlines() if line.strip()]
+        recent_errors = "\n".join(errors[-5:]) if errors else "(none)"
+        return (
+            "voice2control diagnostics\n"
+            f"config_path={cfg_path}\n"
+            f"state_label={self.state_label.text().strip()}\n"
+            f"auto_start_listening={self.default_enable_chk.isChecked()}\n"
+            f"recognition_toggle_text={self.btn_toggle_recognition.text().strip()}\n"
+            f"push_to_talk={self._push_to_talk_key}\n"
+            f"trigger_mode={self.trigger_mode_combo.currentData()}\n"
+            f"vad_enabled={self.vad_enabled_chk.isChecked()}\n"
+            f"vad_silence_threshold_ms={self.vad_silence_ms_edit.text().strip() or '1500'}\n"
+            f"vad_energy_threshold={self.vad_energy_edit.text().strip() or '500'}\n"
+            f"asr_provider={active_provider}\n"
+            f"delivery_mode={mode}\n"
+            f"minimize_to_tray={self.minimize_to_tray_chk.isChecked()}\n"
+            f"lexicon_enabled={self.lexicon_enabled_chk.isChecked()}\n"
+            "recent_errors:\n"
+            f"{recent_errors}\n"
+        )
+
+    def _set_show_startup_guide(self, enabled: bool) -> None:
+        self._show_startup_guide = enabled
+        cfg_path = Path(self.config_edit.text().strip())
+        try:
+            data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            if not isinstance(data, dict):
+                return
+            gui = data.setdefault("gui", {})
+            if not isinstance(gui, dict):
+                return
+            gui["show_startup_guide"] = bool(enabled)
+            cfg_path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+        except Exception:
+            return
+
+    def _show_startup_guide_dialog(self) -> None:
+        if not self._show_startup_guide:
+            return
+        key = self._push_to_talk_key or "F8"
+        trigger_mode = str(self.trigger_mode_combo.currentData() or "push_to_talk")
+        step2 = (
+            f"2) 切换到目标应用窗口，按 {key} 开始录音，再按一次结束\n"
+            if trigger_mode == "toggle"
+            else f"2) 切换到目标应用窗口，按 {key} 开始录音，松开结束\n"
+        )
+        msg = QMessageBox(self)
+        msg.setWindowTitle("首次使用提示")
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.setText(
+            "快速上手：\n"
+            "1) 点击“开始监听”\n"
+            f"{step2}"
+            "3) 识别结果会自动投递到前台窗口，可在本窗口查看预览",
+        )
+        dont_show_chk = QCheckBox("不再显示此提示")
+        msg.setCheckBox(dont_show_chk)
+        msg.addButton("我知道了", QMessageBox.ButtonRole.AcceptRole)
+        msg.exec()
+        if dont_show_chk.isChecked():
+            self._set_show_startup_guide(False)
 
     def _save_config_changes(self) -> bool:
         cfg_path = Path(self.config_edit.text().strip())
@@ -324,11 +808,35 @@ class MainWindow(QMainWindow):
                 raise ValueError("hotkey 必须是对象")
             # 保持识别启动默认值与 GUI 自动监听选项一致，避免双配置导致理解混乱。
             hotkey["recognition_enabled_on_start"] = bool(self.default_enable_chk.isChecked())
+            hotkey["trigger_mode"] = str(self.trigger_mode_combo.currentData() or "push_to_talk")
+            vad = data.setdefault("vad", {})
+            if not isinstance(vad, dict):
+                raise ValueError("vad 必须是对象")
+            try:
+                silence_ms = int(self.vad_silence_ms_edit.text().strip() or "1500")
+            except ValueError:
+                silence_ms = 1500
+            try:
+                energy_threshold = int(self.vad_energy_edit.text().strip() or "500")
+            except ValueError:
+                energy_threshold = 500
+            vad["enabled"] = bool(self.vad_enabled_chk.isChecked())
+            vad["silence_threshold_ms"] = max(300, silence_ms)
+            vad["energy_threshold"] = max(50, energy_threshold)
+            vad["check_window_ms"] = int(vad.get("check_window_ms") or 320)
             gui = data.setdefault("gui", {})
             if not isinstance(gui, dict):
                 raise ValueError("gui 必须是对象")
             gui["minimize_to_tray_on_close"] = bool(self.minimize_to_tray_chk.isChecked())
             gui["auto_start_listening"] = bool(self.default_enable_chk.isChecked())
+            gui["show_startup_guide"] = bool(self._show_startup_guide)
+            gui["show_floating_status"] = bool(self.show_floating_status_chk.isChecked())
+            gui["floating_status_position"] = self._floating_position
+            gui["floating_status_font_size"] = self._floating_font_size
+            gui["floating_status_opacity"] = self._floating_opacity
+            gui["floating_status_x"] = self._floating_manual_pos[0] if self._floating_manual_pos else None
+            gui["floating_status_y"] = self._floating_manual_pos[1] if self._floating_manual_pos else None
+            gui["floating_status_mode"] = self._floating_mode
             lexicon = data.setdefault("lexicon", {})
             if not isinstance(lexicon, dict):
                 raise ValueError("lexicon 必须是对象")
@@ -522,17 +1030,92 @@ class MainWindow(QMainWindow):
         self.btn_start.setEnabled(not running)
         self.btn_stop.setEnabled(running)
         self.btn_toggle_recognition.setEnabled(running)
+        if state == "recognizing":
+            self._recognize_started_at = time.perf_counter()
+        elif state in ("stopped", "idle", "disabled"):
+            self._recognize_started_at = None
         if state == "disabled":
             self._recognition_enabled = False
         elif state in ("idle", "recording", "recognizing", "delivering"):
             self._recognition_enabled = True
         self.btn_toggle_recognition.setText("禁用识别" if self._recognition_enabled else "启用识别")
+        self._update_runtime_hint(state)
+        if self._show_floating_status and self._should_show_floating_for_state(state):
+            state_text = {
+                "starting": "正在启动监听",
+                "idle": "待命中（按热键说话）",
+                "recording": "录音中",
+                "recognizing": "识别中",
+                "delivering": "正在投递",
+                "disabled": "识别已禁用",
+                "stopping": "正在停止",
+                "stopped": "监听已停止",
+            }.get(state, f"状态: {state}")
+            transient_states = {"starting", "stopping", "stopped", "idle", "disabled"}
+            auto_hide_ms = 2200 if state in transient_states else 0
+            prefix = self._strategy_short_text()
+            self._floating_status.show_message(f"语音助手[{prefix}]：{state_text}", auto_hide_ms=auto_hide_ms)
+            if state in ("stopped",):
+                self._floating_status.hide()
+        elif state in ("stopped", "idle", "disabled"):
+            self._floating_status.hide()
+
+    def _should_show_floating_for_state(self, state: str) -> bool:
+        if self._floating_mode == "recording_only":
+            return state in ("recording", "recognizing", "delivering")
+        return True
+
+    def _update_runtime_hint(self, state: str) -> None:
+        key = self._push_to_talk_key or "F8"
+        trigger_mode = str(self.trigger_mode_combo.currentData() or "push_to_talk") if hasattr(self, "trigger_mode_combo") else "push_to_talk"
+        vad_suffix = ""
+        if trigger_mode == "toggle" and hasattr(self, "vad_enabled_chk") and self.vad_enabled_chk.isChecked():
+            vad_suffix = "（VAD 静音自动结束已启用）"
+        action_hint = (
+            f"按 {key} 开始录音，再按一次结束。"
+            if trigger_mode == "toggle"
+            else f"按住 {key} 进行语音识别（按下开始录音，松开结束）。"
+        )
+        if state == "disabled":
+            text = f"监听已运行，但识别已禁用。请点击“启用识别”，然后{action_hint}{vad_suffix}"
+        elif state in ("starting", "idle", "recording", "recognizing", "delivering"):
+            text = f"监听中：{action_hint}{vad_suffix}"
+        else:
+            text = f"提示：先点击“开始监听”，然后{action_hint}{vad_suffix}"
+        self.hint_label.setText(text)
+        if hasattr(self, "cross_app_hint_label"):
+            self.cross_app_hint_label.setText(
+                "跨窗口使用：启动监听后切换到目标应用窗口，"
+                + (
+                    f"按 {key} 开始录音，再按一次结束；"
+                    if trigger_mode == "toggle"
+                    else f"按住 {key} 开始录音，松开结束；"
+                )
+                + "识别结果会自动投递到当前前台窗口。",
+            )
 
     def _on_transcript(self, text: str) -> None:
+        latency_info = ""
+        if self._recognize_started_at is not None:
+            elapsed = max(0.0, time.perf_counter() - self._recognize_started_at)
+            latency_info = f" (耗时 {elapsed:.2f}s)"
+            self._recognize_started_at = None
         self.transcript_box.append(text)
+        self.runtime_preview.setPlainText(f"{text}{latency_info}")
+        if self._show_floating_status and self._floating_mode == "always":
+            preview = text.strip().replace("\n", " ")
+            if len(preview) > 36:
+                preview = preview[:36] + "..."
+            self._floating_status.show_message(f"识别结果：{preview}{latency_info}", auto_hide_ms=2200)
 
     def _on_error(self, msg: str) -> None:
+        self._recognize_started_at = None
         self.error_box.append(msg)
+        if self._show_floating_status and self._floating_mode == "always":
+            preview = msg.strip().replace("\n", " ")
+            if len(preview) > 36:
+                preview = preview[:36] + "..."
+            self._floating_status.show_message(f"异常：{preview}", auto_hide_ms=2200)
 
     def _start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -558,6 +1141,57 @@ class MainWindow(QMainWindow):
         enabled_on_start = bool(cfg.hotkey.recognition_enabled_on_start)
         self._recognition_enabled = enabled_on_start
         self.minimize_to_tray_chk.setChecked(bool(cfg.gui.minimize_to_tray_on_close))
+        self.show_floating_status_chk.blockSignals(True)
+        self.show_floating_status_chk.setChecked(bool(cfg.gui.show_floating_status))
+        self.show_floating_status_chk.blockSignals(False)
+        self.trigger_mode_combo.blockSignals(True)
+        mode_idx = self.trigger_mode_combo.findData(cfg.hotkey.trigger_mode)
+        if mode_idx >= 0:
+            self.trigger_mode_combo.setCurrentIndex(mode_idx)
+        self.trigger_mode_combo.blockSignals(False)
+        self._sync_vad_controls()
+        self._show_floating_status = bool(cfg.gui.show_floating_status)
+        self._floating_position = cfg.gui.floating_status_position
+        self._floating_font_size = cfg.gui.floating_status_font_size
+        self._floating_opacity = cfg.gui.floating_status_opacity
+        self._floating_manual_pos = (
+            (cfg.gui.floating_status_x, cfg.gui.floating_status_y)
+            if cfg.gui.floating_status_x is not None and cfg.gui.floating_status_y is not None
+            else None
+        )
+        self._floating_mode = cfg.gui.floating_status_mode
+        self.floating_mode_combo.blockSignals(True)
+        mode_idx = self.floating_mode_combo.findData(self._floating_mode)
+        if mode_idx >= 0:
+            self.floating_mode_combo.setCurrentIndex(mode_idx)
+        self.floating_mode_combo.blockSignals(False)
+        self.floating_position_combo.blockSignals(True)
+        pos_idx = self.floating_position_combo.findData(self._floating_position)
+        if pos_idx >= 0:
+            self.floating_position_combo.setCurrentIndex(pos_idx)
+        self.floating_position_combo.blockSignals(False)
+        self.floating_font_combo.blockSignals(True)
+        font_idx = self.floating_font_combo.findData(self._floating_font_size)
+        if font_idx >= 0:
+            self.floating_font_combo.setCurrentIndex(font_idx)
+        self.floating_font_combo.blockSignals(False)
+        self.floating_opacity_combo.blockSignals(True)
+        opacity_idx = self.floating_opacity_combo.findData(self._floating_opacity)
+        if opacity_idx >= 0:
+            self.floating_opacity_combo.setCurrentIndex(opacity_idx)
+        self.floating_opacity_combo.blockSignals(False)
+        self._floating_status.set_display_options(
+            position=self._floating_position,
+            font_size=self._floating_font_size,
+            opacity=self._floating_opacity,
+            manual_pos=self._floating_manual_pos,
+        )
+        if self._show_floating_status and not self._strategy_hint_shown_in_session:
+            self._floating_status.show_message(
+                f"当前录音策略：{self._strategy_short_text()}",
+                auto_hide_ms=1500,
+            )
+            self._strategy_hint_shown_in_session = True
         self.btn_toggle_recognition.setText("禁用识别" if enabled_on_start else "启用识别")
         self._thread = threading.Thread(target=self._pipeline.run, daemon=True, name="voice-pipeline")
         self._thread.start()
@@ -594,12 +1228,14 @@ class MainWindow(QMainWindow):
     def _exit_app(self) -> None:
         self._exiting = True
         self._stop()
+        self._floating_status.hide()
         self.close()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._exiting or not self.minimize_to_tray_chk.isChecked():
             try:
                 self.tray.hide()
+                self._floating_status.hide()
             except Exception:
                 pass
             super().closeEvent(event)
@@ -620,6 +1256,7 @@ def launch_gui() -> int:
     w = MainWindow()
     w._load_config_for_ui()
     w.show()
+    QTimer.singleShot(200, w._show_startup_guide_dialog)
     cfg_path = Path(w.config_edit.text().strip())
     should_auto_start = w.default_enable_chk.isChecked()
     if cfg_path.exists():

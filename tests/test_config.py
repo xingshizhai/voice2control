@@ -15,8 +15,17 @@ def test_load_example_config(tmp_path: Path) -> None:
     assert cfg.asr.provider_key
     assert cfg.delivery.profile in cfg.delivery.profiles
     assert "cursor_win" in cfg.delivery.profiles
+    assert cfg.hotkey.trigger_mode in ("push_to_talk", "toggle")
+    assert isinstance(cfg.vad.enabled, bool)
+    assert isinstance(cfg.vad.silence_threshold_ms, int)
     assert isinstance(cfg.gui.minimize_to_tray_on_close, bool)
     assert isinstance(cfg.gui.auto_start_listening, bool)
+    assert isinstance(cfg.gui.show_startup_guide, bool)
+    assert isinstance(cfg.gui.show_floating_status, bool)
+    assert cfg.gui.floating_status_position in ("bottom_right", "bottom_left")
+    assert isinstance(cfg.gui.floating_status_font_size, int)
+    assert isinstance(cfg.gui.floating_status_opacity, int)
+    assert cfg.gui.floating_status_mode in ("always", "recording_only")
     assert isinstance(cfg.lexicon.enabled, bool)
 
 
@@ -119,9 +128,57 @@ audio: {}
 gui:
   minimize_to_tray_on_close: false
   auto_start_listening: false
+  show_startup_guide: false
+  show_floating_status: false
+  floating_status_position: bottom_left
+  floating_status_font_size: 14
+  floating_status_opacity: 180
+  floating_status_mode: recording_only
+  floating_status_x: 300
+  floating_status_y: 720
 """,
         encoding="utf-8",
     )
     cfg = load_app_config(p)
     assert cfg.gui.minimize_to_tray_on_close is False
     assert cfg.gui.auto_start_listening is False
+    assert cfg.gui.show_startup_guide is False
+    assert cfg.gui.show_floating_status is False
+    assert cfg.gui.floating_status_position == "bottom_left"
+    assert cfg.gui.floating_status_font_size == 14
+    assert cfg.gui.floating_status_opacity == 180
+    assert cfg.gui.floating_status_mode == "recording_only"
+    assert cfg.gui.floating_status_x == 300
+    assert cfg.gui.floating_status_y == 720
+
+
+def test_hotkey_trigger_mode_parse(tmp_path: Path) -> None:
+    p = tmp_path / "hk.yaml"
+    p.write_text(
+        """
+asr:
+  base_url: "ws://127.0.0.1:6006"
+hotkey:
+  trigger_mode: toggle
+delivery:
+  mode: paste_only
+  profile: p
+  profiles:
+    p:
+      actions:
+        - action: paste
+          keys: ["ctrl", "v"]
+history: {}
+audio: {}
+vad:
+  enabled: true
+  silence_threshold_ms: 1200
+  energy_threshold: 450
+  check_window_ms: 300
+""",
+        encoding="utf-8",
+    )
+    cfg = load_app_config(p)
+    assert cfg.hotkey.trigger_mode == "toggle"
+    assert cfg.vad.enabled is True
+    assert cfg.vad.silence_threshold_ms == 1200

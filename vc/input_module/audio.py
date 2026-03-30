@@ -80,6 +80,9 @@ class AudioRecorder:
         self._thread = None
         return bytes(self._buf)
 
+    def snapshot(self) -> bytes:
+        return bytes(self._buf)
+
     def cancel(self) -> None:
         self._stop.set()
         t = self._thread
