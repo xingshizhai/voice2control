@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import signal
 import sys
+import threading
 from queue import Queue
 from typing import Any, Callable
 
@@ -10,7 +11,13 @@ logger = logging.getLogger(__name__)
 
 
 def install_graceful_shutdown(q: "Queue[tuple[str, ...]]") -> Callable[[], None]:
-    """让 Ctrl+C / 控制台关闭 能结束主循环：向队列放入 ('quit',)。"""
+    """让 Ctrl+C / 控制台关闭 能结束主循环：向队列放入 ('quit',)。
+
+    仅在主线程中注册信号处理器；若从子线程调用（如 GUI 模式），
+    信号由主线程（Qt 事件循环）管理，此处直接返回空操作。
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return lambda: None
 
     def request_quit() -> None:
         try:
